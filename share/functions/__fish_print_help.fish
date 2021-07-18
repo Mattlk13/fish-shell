@@ -10,7 +10,7 @@ function __fish_print_help --description "Print help message for the specified f
 
     # Do nothing if the file does not exist
     if not test -e "$__fish_data_dir/man/man1/$item.1" -o -e "$__fish_data_dir/man/man1/$item.1.gz"
-        return
+        return 2
     end
 
     # Render help output, save output into the variable 'help'
@@ -111,7 +111,7 @@ function __fish_print_help --description "Print help message for the specified f
                     end
             end
         end
-    end | string replace -ra '^       ' '' | ul | # post-process with `ul`, to interpret the old-style grotty escapes
+    end | string replace -ra '^       ' '' |
         begin
             set -l pager less
             set -q PAGER
@@ -119,13 +119,13 @@ function __fish_print_help --description "Print help message for the specified f
             not isatty stdout
             and set pager cat # cannot use a builtin here
             # similar to man, but add -F to quit paging when the help output is brief (#6227)
-            set -xl LESS isrFX
+            not set -qx LESS
+            and set -xl LESS isRF
             # less options:
             # -i (--ignore-case) search case-insensitively, like man
             # -s (--squeeze-blank-lines) not strictly necessary since we already do that above
-            # -r (--raw-control-chars) to display bold, underline and colors
+            # -R (--RAW-CONTROL-CHARS) to display colors and such
             # -F (--quit-if-one-screen) to maintain the non-paging behavior for small outputs
-            # -X (--no-init) not sure if this is needed but git uses it
             $pager
         end
 end

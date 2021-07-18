@@ -2,6 +2,8 @@
 #define FISH_NO_ISW_WRAPPERS
 #include "config.h"
 
+#include "wutil.h"  // IWYU pragma: keep
+
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -9,38 +11,28 @@
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <sys/stat.h>
-
-#include <cstring>
-#if defined(__linux__)
-#include <sys/statfs.h>
-#endif
 #include <sys/mount.h>
+#include <sys/stat.h>
 #include <sys/statvfs.h>
 #include <sys/types.h>
 #include <unistd.h>
 #include <wctype.h>
 
 #include <atomic>
+#include <cstring>
 #include <cwchar>
 #include <string>
 #include <unordered_map>
 
 #include "common.h"
 #include "fallback.h"  // IWYU pragma: keep
+#include "fds.h"
 #include "flog.h"
 #include "wcstringutil.h"
-#include "wutil.h"  // IWYU pragma: keep
 
 using cstring = std::string;
 
-const file_id_t kInvalidFileID = {static_cast<dev_t>(-1LL),
-                                  static_cast<ino_t>(-1LL),
-                                  static_cast<uint64_t>(-1LL),
-                                  -1,
-                                  -1,
-                                  -1,
-                                  -1};
+const file_id_t kInvalidFileID{};
 
 /// Map used as cache by wgettext.
 static owning_lock<std::unordered_map<wcstring, wcstring>> wgettext_map;
@@ -142,51 +134,6 @@ wcstring wgetcwd() {
     return wcstring();
 }
 
-int set_cloexec(int fd, bool should_set) {
-    // Note we don't want to overwrite existing flags like O_NONBLOCK which may be set. So fetch the
-    // existing flags and modify them.
-    int flags = fcntl(fd, F_GETFD, 0);
-    if (flags < 0) {
-        return -1;
-    }
-    int new_flags = flags;
-    if (should_set) {
-        new_flags |= FD_CLOEXEC;
-    } else {
-        new_flags &= ~FD_CLOEXEC;
-    }
-    if (flags == new_flags) {
-        return 0;
-    } else {
-        return fcntl(fd, F_SETFD, new_flags);
-    }
-}
-
-int open_cloexec(const std::string &path, int flags, mode_t mode) {
-    return open_cloexec(path.c_str(), flags, mode);
-}
-
-int open_cloexec(const char *path, int flags, mode_t mode) {
-    int fd;
-
-// Prefer to use O_CLOEXEC.
-#ifdef O_CLOEXEC
-    fd = open(path, flags | O_CLOEXEC, mode);
-#else
-    fd = open(path, flags, mode);
-    if (fd >= 0 && !set_cloexec(fd)) {
-        exec_close(fd);
-        fd = -1;
-    }
-#endif
-    return fd;
-}
-
-int wopen_cloexec(const wcstring &pathname, int flags, mode_t mode) {
-    cstring tmp = wcs2string(pathname);
-    return open_cloexec(tmp, flags, mode);
-}
-
 DIR *wopendir(const wcstring &name) {
     const cstring tmp = wcs2string(name);
     return opendir(tmp.c_str());
@@ -254,40 +201,6 @@ int make_fd_blocking(int fd) {
         err = fcntl(fd, F_SETFL, flags & ~O_NONBLOCK);
     }
     return err == -1 ? errno : 0;
-}
-
-int fd_check_is_remote(int fd) {
-#if defined(__linux__)
-    struct statfs buf {};
-    if (fstatfs(fd, &buf) < 0) {
-        return -1;
-    }
-    // Linux has constants for these like NFS_SUPER_MAGIC, SMB_SUPER_MAGIC, CIFS_MAGIC_NUMBER but
-    // these are in varying headers. Simply hard code them.
-    // NOTE: The cast is necessary for 32-bit systems because of the 4-byte CIFS_MAGIC_NUMBER
-    switch (static_cast<unsigned int>(buf.f_type)) {
-        case 0x6969:       // NFS_SUPER_MAGIC
-        case 0x517B:       // SMB_SUPER_MAGIC
-        case 0xFE534D42U:  // SMB2_MAGIC_NUMBER - not in the manpage
-        case 0xFF534D42U:  // CIFS_MAGIC_NUMBER
-            return 1;
-        default:
-            // Other FSes are assumed local.
-            return 0;
-    }
-#elif defined(ST_LOCAL)
-    // ST_LOCAL is a flag to statvfs, which is itself standardized.
-    // In practice the only system to use this path is NetBSD.
-    struct statvfs buf {};
-    if (fstatvfs(fd, &buf) < 0) return -1;
-    return (buf.f_flag & ST_LOCAL) ? 0 : 1;
-#elif defined(MNT_LOCAL)
-    struct statfs buf {};
-    if (fstatfs(fd, &buf) < 0) return -1;
-    return (buf.f_flags & MNT_LOCAL) ? 0 : 1;
-#else
-    return -1;
-#endif
 }
 
 static inline void safe_append(char *buffer, const char *s, size_t buffsize) {
@@ -481,16 +394,51 @@ wcstring path_normalize_for_cd(const wcstring &wd, const wcstring &path) {
     return result;
 }
 
-wcstring wdirname(const wcstring &path) {
-    std::string tmp = wcs2string(path);
-    const char *narrow_res = dirname(&tmp[0]);
-    return str2wcstring(narrow_res);
+wcstring wdirname(wcstring path) {
+    // Do not use system-provided dirname (#7837).
+    // On Mac it's not thread safe, and will error for paths exceeding PATH_MAX.
+    // This follows OpenGroup dirname recipe.
+    // 1: Double-slash stays.
+    if (path == L"//") return path;
+
+    // 2: All slashes => return slash.
+    if (!path.empty() && path.find_first_not_of(L'/') == wcstring::npos) return L"/";
+
+    // 3: Trim trailing slashes.
+    while (!path.empty() && path.back() == L'/') path.pop_back();
+
+    // 4: No slashes left => return period.
+    size_t last_slash = path.rfind(L'/');
+    if (last_slash == wcstring::npos) return L".";
+
+    // 5: Remove trailing non-slashes.
+    path.erase(last_slash + 1, wcstring::npos);
+
+    // 6: Skip as permitted.
+    // 7: Remove trailing slashes again.
+    while (!path.empty() && path.back() == L'/') path.pop_back();
+
+    // 8: Empty => return slash.
+    if (path.empty()) path = L"/";
+    return path;
 }
 
-wcstring wbasename(const wcstring &path) {
-    std::string tmp = wcs2string(path);
-    char *narrow_res = basename(&tmp[0]);
-    return str2wcstring(narrow_res);
+wcstring wbasename(wcstring path) {
+    // This follows OpenGroup basename recipe.
+    // 1: empty => allowed to return ".". This is what system impls do.
+    if (path.empty()) return L".";
+
+    // 2: Skip as permitted.
+    // 3: All slashes => return slash.
+    if (!path.empty() && path.find_first_not_of(L'/') == wcstring::npos) return L"/";
+
+    // 4: Remove trailing slashes.
+    while (!path.empty() && path.back() == L'/') path.pop_back();
+
+    // 5: Remove up to and including last slash.
+    size_t last_slash = path.rfind(L'/');
+    if (last_slash != wcstring::npos) path.erase(0, last_slash + 1);
+    return path;
 }
 
 // Really init wgettext.
@@ -817,6 +765,10 @@ file_id_t file_id_for_fd(int fd) {
     return result;
 }
 
+file_id_t file_id_for_fd(const autoclose_fd_t &fd) {
+    return file_id_for_fd(fd.fd());
+}
+
 file_id_t file_id_for_path(const wcstring &path) {
     file_id_t result = kInvalidFileID;
     struct stat buf = {};
@@ -838,6 +790,20 @@ file_id_t file_id_for_path(const std::string &path) {
 bool file_id_t::operator==(const file_id_t &rhs) const { return this->compare_file_id(rhs) == 0; }
 
 bool file_id_t::operator!=(const file_id_t &rhs) const { return !(*this == rhs); }
+
+
+wcstring file_id_t::dump() const {
+    using llong = long long;
+    wcstring result;
+    append_format(result, L"     device: %lld\n", llong(device));
+    append_format(result, L"      inode: %lld\n", llong(inode));
+    append_format(result, L"       size: %lld\n", llong(size));
+    append_format(result, L"     change: %lld\n", llong(change_seconds));
+    append_format(result, L"change_nano: %lld\n", llong(change_nanoseconds));
+    append_format(result, L"        mod: %lld\n", llong(mod_seconds));
+    append_format(result, L"   mod_nano: %lld", llong(mod_nanoseconds));
+    return result;
+}
 
 template <typename T>
 int compare(T a, T b) {

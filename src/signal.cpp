@@ -145,9 +145,9 @@ static const struct lookup_entry signal_table[] = {
 
 /// Test if \c name is a string describing the signal named \c canonical.
 static int match_signal_name(const wchar_t *canonical, const wchar_t *name) {
-    if (wcsncasecmp(name, L"sig", 3) == 0) name += 3;
+    if (wcsncasecmp(name, L"sig", const_strlen("sig")) == 0) name += 3;
 
-    return wcscasecmp(canonical + 3, name) == 0;
+    return wcscasecmp(canonical + const_strlen("sig"), name) == 0;
 }
 
 int wcs2sig(const wchar_t *str) {
@@ -187,10 +187,10 @@ static const pid_t s_main_pid = getpid();
 
 /// It's possible that we receive a signal after we have forked, but before we have reset the signal
 /// handlers (or even run the pthread_atfork calls). In that event we will do something dumb like
-/// swallow SIGINT. Ensure that doesn't happen. Check if we are the main fish process; if not reset
+/// swallow SIGINT. Ensure that doesn't happen. Check if we are the main fish process; if not, reset
 /// and re-raise the signal. \return whether we re-raised the signal.
 static bool reraise_if_forked_child(int sig) {
-    // Don't use is_forked_child, that relies on atfork handlers which maybe have not run yet.
+    // Don't use is_forked_child: it relies on atfork handlers which may have not yet run.
     if (getpid() == s_main_pid) {
         return false;
     }
@@ -206,11 +206,6 @@ static volatile relaxed_atomic_t<sig_atomic_t> s_cancellation_signal{0};
 void signal_clear_cancel() { s_cancellation_signal = 0; }
 
 int signal_check_cancel() { return s_cancellation_signal; }
-
-/// Number of SIGIO events.
-static volatile relaxed_atomic_t<uint32_t> s_sigio_count{0};
-
-uint32_t signal_get_sigio_count() { return s_sigio_count; }
 
 /// The single signal handler. By centralizing signal handling we ensure that we can never install
 /// the "wrong" signal handler (see #5969).
@@ -275,15 +270,6 @@ static void fish_signal_handler(int sig, siginfo_t *info, void *context) {
             // We have a sigalarm handler that does nothing. This is used in the signal torture
             // test, to verify that we behave correctly when receiving lots of irrelevant signals.
             break;
-
-#if defined(SIGIO)
-        case SIGIO:
-            // An async FD became readable/writable/etc.
-            // Don't try to look at si_code, it is not set under BSD.
-            // Don't use ++ to avoid a CAS.
-            s_sigio_count = s_sigio_count + 1;
-            break;
-#endif
     }
     errno = saved_errno;
 }
@@ -365,11 +351,6 @@ void signal_set_handlers(bool interactive) {
     act.sa_sigaction = &fish_signal_handler;
     act.sa_flags = SA_SIGINFO;
     sigaction(SIGINT, &act, nullptr);
-
-    // Apply our SIGIO handler.
-    act.sa_sigaction = &fish_signal_handler;
-    act.sa_flags = SA_SIGINFO;
-    sigaction(SIGIO, &act, nullptr);
 
     // Whether or not we're interactive we want SIGCHLD to not interrupt restartable syscalls.
     act.sa_sigaction = &fish_signal_handler;

@@ -6,15 +6,20 @@
 
 #include "wcstringutil.h"
 
-features_t::features_t() = default;
+features_t::features_t() {
+    for (const metadata_t &md : metadata) {
+        this->set(md.flag, md.default_value);
+    }
+}
 
 /// The set of features applying to this instance.
 features_t features_t::global_features;
 
 const features_t::metadata_t features_t::metadata[features_t::flag_count] = {
-    {stderr_nocaret, L"stderr-nocaret", L"3.0", L"^ no longer redirects stderr"},
-    {qmark_noglob, L"qmark-noglob", L"3.0", L"? no longer globs"},
-    {string_replace_backslash, L"regex-easyesc", L"3.1", L"string replace -r needs fewer \\'s"},
+    {stderr_nocaret, L"stderr-nocaret", L"3.0", L"^ no longer redirects stderr", true},
+    {qmark_noglob, L"qmark-noglob", L"3.0", L"? no longer globs", false},
+    {string_replace_backslash, L"regex-easyesc", L"3.1", L"string replace -r needs fewer \\'s",
+     false},
 };
 
 const struct features_t::metadata_t *features_t::metadata_for(const wchar_t *name) {
@@ -40,7 +45,7 @@ void features_t::set_from_string(const wcstring &str) {
         // A "no-" prefix inverts the sense.
         if (string_prefixes_string(L"no-", name)) {
             value = false;
-            name += 3;  // std::wcslen(L"no-")
+            name += const_strlen("no-");
         }
         // Look for a feature with this name. If we don't find it, assume it's a group name and set
         // all features whose group contain it. Do nothing even if the string is unrecognized; this

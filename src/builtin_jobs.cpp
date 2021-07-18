@@ -121,8 +121,8 @@ static void builtin_jobs_print(const job_t *j, int mode, int header, io_streams_
 }
 
 /// The jobs builtin. Used for printing running jobs. Defined in builtin_jobs.c.
-maybe_t<int> builtin_jobs(parser_t &parser, io_streams_t &streams, wchar_t **argv) {
-    wchar_t *cmd = argv[0];
+maybe_t<int> builtin_jobs(parser_t &parser, io_streams_t &streams, const wchar_t **argv) {
+    const wchar_t *cmd = argv[0];
     int argc = builtin_count_args(argv);
     bool found = false;
     int mode = JOBS_DEFAULT;
@@ -196,12 +196,12 @@ maybe_t<int> builtin_jobs(parser_t &parser, io_streams_t &streams, wchar_t **arg
 
                 if (argv[i][0] == L'%') {
                     int job_id = fish_wcstoi(argv[i] + 1);
-                    if (errno || job_id < -1) {
-                        streams.err.append_format(_(L"%ls: '%ls' is not a valid job id"), cmd,
+                    if (errno || job_id < 0) {
+                        streams.err.append_format(_(L"%ls: '%ls' is not a valid job id\n"), cmd,
                                                   argv[i]);
                         return STATUS_INVALID_ARGS;
                     }
-                    j = parser.job_get(job_id);
+                    j = parser.job_with_id(job_id);
                 } else {
                     int pid = fish_wcstoi(argv[i]);
                     if (errno || pid < 0) {

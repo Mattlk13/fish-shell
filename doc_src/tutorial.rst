@@ -28,8 +28,8 @@ which means you are all set up and can start using fish::
 
 
 This prompt that you see above is the fish default prompt: it shows your username, hostname, and working directory.
-- to change this prompt see `how to change your prompt <#prompt>`_
-- to switch to fish permanently see `switch your default shell to fish <#switching-to-fish>`_.
+- to change this prompt see :ref:`how to change your prompt <prompt>`
+- to switch to fish permanently see :ref:`switch your default shell to fish <switching-to-fish>`.
 
 From now on, we'll pretend your prompt is just a ``>`` to save space.
 
@@ -41,6 +41,11 @@ This tutorial assumes a basic understanding of command line shells and Unix comm
 
 If you have a strong understanding of other shells, and want to know what fish does differently, search for the magic phrase *unlike other shells*, which is used to call out important differences.
 
+Or, if you want a quick overview over the differences to other shells like Bash, see :ref:`Fish For Bash Users <fish_for_bash_users>`.
+
+For the full, detailed description of how to use fish interactively, see :ref:`Interactive Use <interactive>`.
+
+For a comprehensive description of fish's scripting language, see :ref:`The Fish Language<language>`.
 
 Running Commands
 ----------------
@@ -51,32 +56,26 @@ Fish runs commands like other shells: you type a command, followed by its argume
     hello world
 
 
-This runs the command ``echo`` with the arguments ``hello`` and ``world``.
-
-You can include a literal space in an argument with a backslash, or by using single or double quotes::
+This runs the command ``echo`` with the arguments ``hello`` and ``world``. In this case that's the same as one argument ``hello world``, but in many cases it's not. If you need to pass an argument that includes a space, you can :ref:`escape <escapes>` with a backslash, or :ref:`quote <quotes>` it using single or double quotes::
 
     > mkdir My\ Files
+    # Makes a directory called "My Files", with a space in the name
     > cp ~/Some\ File 'My Files'
+    # Copies a file called "Some File" in the home directory to "My Files"
     > ls "My Files"
     Some File
-
-
-Commands can be chained with semicolons.
 
 
 Getting Help
 ------------
 
-Fish has excellent help and man pages. Run ``help`` to open help in a web browser, and ``man`` to open it in a man page. You can also ask for help with a specific command, for example, ``help set`` to open in a web browser, or ``man set`` to see it in the terminal.
-
-
+Run ``help`` to open fish's help in a web browser, and ``man`` with the page (like ``fish-language``) to open it in a man page. You can also ask for help with a specific command, for example, ``help set`` to open in a web browser, or ``man set`` to see it in the terminal.
 
 ::
 
     > man set
     set - handle shell variables
       Synopsis...
-
 
 
 Syntax Highlighting
@@ -141,6 +140,7 @@ Especially powerful is the recursive wildcard ** which searches directories recu
 
 If that directory traversal is taking a long time, you can :kbd:`Control`\ +\ :kbd:`C` out of it.
 
+For more, see :ref:`Wildcards <expand-wildcard>`.
 
 Pipes and Redirections
 ----------------------
@@ -164,6 +164,7 @@ To redirect stdout and stderr into one file, you need to first redirect stdout, 
 
     > make > make_output.txt 2>&1
 
+For more, see :ref:`Input and output redirections <redirects>` and :ref:`Pipes <pipes>`.
 
 Autosuggestions
 ---------------
@@ -233,13 +234,13 @@ Try hitting tab and see what fish can do!
 Variables
 ---------
 
-Like other shells, a dollar sign performs variable substitution::
+Like other shells, a dollar sign followed by a variable name is replaced with the value of that variable::
 
     > echo My home directory is $HOME
     My home directory is /home/tutorial
 
 
-Variable substitution also happens in double quotes, but not single quotes::
+This is known as variable substitution, and it also happens in double quotes, but not single quotes::
 
     > echo "My current directory is $PWD"
     My current directory is /home/tutorial
@@ -265,7 +266,7 @@ Unlike other shells, variables are not further split after substitution::
     Mister Noodle
 
 
-In bash, this would have created two directories "Mister" and "Noodle". In fish, it created only one: the variable had the value "Mister Noodle", so that is the argument that was passed to ``mkdir``, spaces and all. Other shells use the term "arrays", rather than lists.
+In bash, this would have created two directories "Mister" and "Noodle". In fish, it created only one: the variable had the value "Mister Noodle", so that is the argument that was passed to ``mkdir``, spaces and all.
 
 You can erase (or "delete") a variable with ``-e`` or ``--erase``
 
@@ -274,6 +275,10 @@ You can erase (or "delete") a variable with ``-e`` or ``--erase``
     > set -e MyVariable
     > env | grep MyVariable
     (no output)
+
+For more, see :ref:`Variable expansion <expand-variable>`.
+
+.. _tut-exports:
 
 Exports (Shell Variables)
 -------------------------
@@ -290,6 +295,11 @@ To give a variable to an external command, it needs to be "exported". Unlike oth
 
 It can also be unexported with ``--unexport`` or ``-u``.
 
+This works the other way around as well! If fish is started by something else, it inherits that parents exported variables. So if your terminal emulator starts fish, and it exports ``$LANG`` set to ``en_US.UTF-8``, fish will receive that setting. And whatever started your terminal emulator also gave *it* some variables that it will then pass on unless it specifically decides not to. This is how fish usually receives the values for things like ``$LANG``, ``$PATH`` and ``$TERM``, without you having to specify them again.
+
+Exported variables can be local or global or universal - "exported" is not a :ref:`scope <variables-scope>`! Usually you'd make them global via ``set -gx MyVariable SomeValue``.
+
+For more, see :ref:`Exporting variables <variables-export>`.
 
 .. _tut-lists:
 
@@ -305,7 +315,6 @@ Other variables, like ``$PATH``, really do have multiple values. During variable
     > echo $PATH
     /usr/bin /bin /usr/sbin /sbin /usr/local/bin
 
-
 Variables whose name ends in "PATH" are automatically split on colons to become lists. They are joined using colons when exported to subcommands. This is for compatibility with other tools, which expect $PATH to use colons. You can also explicitly add this quirk to a variable with ``set --path``, or remove it with ``set --unpath``.
 
 Lists cannot contain other lists: there is no recursion.  A variable is a list of strings, full stop.
@@ -315,12 +324,9 @@ Get the length of a list with ``count``::
     > count $PATH
     5
 
-
 You can append (or prepend) to a list by setting the list to itself, with some additional arguments. Here we append /usr/local/bin to $PATH::
 
     > set PATH $PATH /usr/local/bin
-
-
 
 You can access individual elements with square brackets. Indexing starts at 1 from the beginning, and -1 from the end::
 
@@ -331,10 +337,7 @@ You can access individual elements with square brackets. Indexing starts at 1 fr
     > echo $PATH[-1]
     /usr/local/bin
 
-
 You can also access ranges of elements, known as "slices":
-
-
 
 ::
 
@@ -342,7 +345,6 @@ You can also access ranges of elements, known as "slices":
     /usr/bin /bin
     > echo $PATH[-1..2]
     /usr/local/bin /sbin /usr/sbin /bin
-
 
 You can iterate over a list (or a slice) with a for loop::
 
@@ -355,7 +357,6 @@ You can iterate over a list (or a slice) with a for loop::
     entry: /sbin
     entry: /usr/local/bin
 
-
 Lists adjacent to other lists or strings are expanded as :ref:`cartesian products <cartesian-product>` unless quoted (see :ref:`Variable expansion <expand-variable>`)::
 
     > set a 1 2 3
@@ -367,17 +368,18 @@ Lists adjacent to other lists or strings are expanded as :ref:`cartesian product
     > echo "$a banana"
     1 2 3 banana
 
+This is similar to :ref:`Brace expansion <expand-brace>`.
 
-This is similar to `Brace expansion <index#expand-brace>`__.
+For more, see :ref:`Lists <variables-lists>`.
+
 
 Command Substitutions
 ---------------------
 
-Command substitutions use the output of one command as an argument to another. Unlike other shells, fish does not use backticks `` for command substitutions. Instead, it uses parentheses::
+Command substitutions use the output of one command as an argument to another. Unlike other shells, fish does not use backticks `` for command substitutions. Instead, it uses parentheses with or without a dollar::
 
-    > echo In (pwd), running (uname)
+    > echo In (pwd), running $(uname)
     In /home/tutorial, running FreeBSD
-
 
 A common idiom is to capture the output of a command in a variable::
 
@@ -385,16 +387,13 @@ A common idiom is to capture the output of a command in a variable::
     > echo $os
     Linux
 
+Command substitutions without a dollar are not expanded within quotes, so the version with a dollar is simpler::
 
-Command substitutions are not expanded within quotes. Instead, you can temporarily close the quotes, add the command substitution, and reopen them, all in the same argument::
-
-    > touch "testing_"(date +%s)".txt"
+    > touch "testing_$(date +%s).txt"
     > ls *.txt
     testing_1360099791.txt
 
-
 Unlike other shells, fish does not split command substitutions on any whitespace (like spaces or tabs), only newlines. This can be an issue with commands like ``pkg-config`` that print what is meant to be multiple arguments on a single line. To split it on spaces too, use ``string split``.
-
 
 ::
 
@@ -405,6 +404,16 @@ Unlike other shells, fish does not split command substitutions on any whitespace
     -lgobject-2.0
     -lglib-2.0
 
+If you need a command substitutions output as one argument, without any splits, use quoted command substitution::
+
+    > echo "first line
+    second line" > myfile
+    > set myfile "$(cat myfile)"
+    > printf '|%s|' $myfile
+    |first line
+    second line|
+
+For more, see :ref:`Command substitution <expand-command-substitution>`.
 
 .. _tut-semicolon:
 
@@ -436,10 +445,11 @@ Unlike other shells, fish stores the exit status of the last command in ``$statu
     > echo $status
     1
 
-
 This indicates how the command fared - 0 usually means success, while the others signify kinds of failure. For instance fish's ``set --query`` returns the number of variables it queried that weren't set - ``set --query PATH`` usually returns 0, ``set --query arglbargl boogagoogoo`` usually returns 2.
 
 There is also a ``$pipestatus`` list variable for the exit statuses [#]_ of processes in a pipe.
+
+For more, see :ref:`The status variable <variables-status>`.
 
 .. [#] or "stati" if you prefer, or "statūs" if you've time-travelled from ancient Rome or work as a latin teacher
 
@@ -456,13 +466,13 @@ Here, ``make`` is only executed if ``./configure`` succeeds (returns 0), and ``s
 
 fish also supports :ref:`and <cmd-and>`, :ref:`or <cmd-or>`, and :ref:`not <cmd-not>`. The first two are job modifiers and have lower precedence. Example usage::
 
-    > cp file1.txt file1_bak.txt && cp file2.txt file2_bak.txt ; and echo "Backup successful"; or echo "Backup failed"
+    > cp file1 file1_bak && cp file2 file2_bak; and echo "Backup successful"; or echo "Backup failed"
     Backup failed
 
 
 As mentioned in :ref:`the section on the semicolon <tut-semicolon>`, this can also be written in multiple lines, like so::
 
-    cp file1.txt file1_bak.txt && cp file2.txt file2_bak.txt
+    cp file1 file1_bak && cp file2 file2_bak
     and echo "Backup successful"
     or echo "Backup failed"
 
@@ -504,7 +514,9 @@ To compare strings or numbers or check file properties (whether a file exists or
 
     # or
 
-    if test -e /etc/hosts # is true if the path /etc/hosts exists - it could be a file or directory or symlink (or possibly something else).
+    # This test is true if the path /etc/hosts exists
+    # - it could be a file or directory or symlink (or possibly something else).
+    if test -e /etc/hosts
         echo We most likely have a hosts file
     else
         echo We do not have a hosts file
@@ -535,9 +547,9 @@ There is also a :ref:`switch <cmd-switch>` command::
         echo Hi, stranger!
     end
 
+As you see, :ref:`case <cmd-case>` does not fall through, and can accept multiple arguments or (quoted) wildcards.
 
-Note that :ref:`case <cmd-case>` does not fall through, and can accept multiple arguments or (quoted) wildcards.
-
+For more, see :ref:`Conditions <syntax-conditional>`.
 
 Functions
 ---------
@@ -553,7 +565,7 @@ A fish function is a list of commands, which may optionally take arguments. Unli
     Hello everybody!
 
 
-Unlike other shells, fish does not have aliases or special prompt syntax. Functions take their place.
+Unlike other shells, fish does not have aliases or special prompt syntax. Functions take their place. [#]_
 
 You can list the names of all functions with the :ref:`functions <cmd-functions>` builtin (note the plural!). fish starts out with a number of functions::
 
@@ -568,6 +580,9 @@ You can see the source for any function by passing its name to ``functions``::
         command ls -G $argv
     end
 
+For more, see :ref:`Functions <syntax-function>`.
+
+.. [#] There is a function called :ref:`alias <cmd-alias>`, but it's just a shortcut to make functions.
 
 Loops
 -----
@@ -596,6 +611,7 @@ Iterating over a list of numbers can be done with ``seq``::
         touch file_$x.txt
     end
 
+For more, see :ref:`Loops and blocks <syntax-loops-and-blocks>`.
 
 Prompt
 ------
@@ -634,12 +650,14 @@ This prompt would look like:
     :red:`/home/tutorial >` _
 
 
-You can choose among some sample prompts by running ``fish_config prompt``.
+You can choose among some sample prompts by running ``fish_config`` for a web UI or ``fish_config prompt`` for a simpler version inside your terminal.
 
 $PATH
 -----
 
 ``$PATH`` is an environment variable containing the directories that fish searches for commands. Unlike other shells, $PATH is a :ref:`list <tut-lists>`, not a colon-delimited string.
+
+Fish takes care to set ``$PATH`` to a default, but typically it is just inherited from fish's parent process and is set to a value that makes sense for the system - see :ref:`Exports <tut-exports>`.
 
 To prepend /usr/local/bin and /usr/sbin to ``$PATH``, you can write::
 
@@ -692,7 +710,7 @@ It is possible to directly create functions and variables in ``config.fish`` fil
 
 However, it is more common and efficient to use  autoloading functions and universal variables.
 
-If you want to organize your configuration, fish also reads commands in .fish files in ``~/.config/fish/conf.d/``. See :ref:`initialization <initialization>` for the details.
+If you want to organize your configuration, fish also reads commands in .fish files in ``~/.config/fish/conf.d/``. See :ref:`Configuration Files <configuration>` for the details.
 
 Autoloading Functions
 ---------------------
@@ -750,6 +768,7 @@ Change your default shell with::
 
     > chsh -s /usr/local/bin/fish
 
+This assumes you installed fish to /usr/local/bin, which is the default location when you've compiled it yourself. If you installed it with a package manager, the usual location is /usr/bin/fish, but package managers typically already add it to /etc/shells. Just substitute the correct location.
 
 (To change it back to another shell, just substitute ``/usr/local/bin/fish``
 with ``/bin/bash``, ``/bin/tcsh`` or ``/bin/zsh`` as appropriate in the steps above.)

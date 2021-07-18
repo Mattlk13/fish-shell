@@ -1111,6 +1111,12 @@ class ast_t::populator_t {
 
         if (!token.allows_token(peek_token().type)) {
             const auto &peek = peek_token();
+            if ((flags_ & parse_flag_leave_unterminated) &&
+                (peek.tok_error == tokenizer_error_t::unterminated_quote ||
+                 peek.tok_error == tokenizer_error_t::unterminated_subshell)) {
+                return;
+            }
+
             parse_error(peek, parse_error_generic, L"Expected %ls, but found %ls",
                         token_types_user_presentable_description({TokTypes...}).c_str(),
                         peek.user_presentable_description().c_str());
@@ -1133,6 +1139,12 @@ class ast_t::populator_t {
         if (!keyword.allows_keyword(peek_token().keyword)) {
             keyword.unsourced = true;
             const auto &peek = peek_token();
+
+            if ((flags_ & parse_flag_leave_unterminated) &&
+                (peek.tok_error == tokenizer_error_t::unterminated_quote ||
+                 peek.tok_error == tokenizer_error_t::unterminated_subshell)) {
+                return;
+            }
 
             // Special error reporting for keyword_t<kw_end>.
             std::array<parse_keyword_t, sizeof...(KWs)> allowed = {{KWs...}};
@@ -1221,8 +1233,6 @@ class ast_t::populator_t {
         assert(!visit_stack_.empty() && visit_stack_.back() == &node &&
                "Node was not at the top of the visit stack");
         visit_stack_.pop_back();
-        FLOGF(ast_construction, L"%*sdid_visit %ls %p", spaces(), "", node.describe().c_str(),
-              (const void *)&node);
     }
 
     // The ast which we are populating.

@@ -58,6 +58,8 @@ class category_list_t {
 
     category_t event{L"event", L"Firing events"};
 
+    category_t exec{L"exec", L"Errors reported by exec (on by default)", true};
+
     category_t exec_job_status{L"exec-job-status", L"Jobs changing status"};
 
     category_t exec_job_exec{L"exec-job-exec", L"Jobs being executed"};
@@ -86,6 +88,7 @@ class category_list_t {
     category_t env_dispatch{L"env-dispatch", L"Reacting to variables"};
 
     category_t uvar_file{L"uvar-file", L"Writing/reading the universal variable store"};
+    category_t uvar_notifier{L"uvar-notifier", L"Notifications about universal variable changes"};
 
     category_t topic_monitor{L"topic-monitor", L"Internal details of the topic monitor"};
     category_t char_encoding{L"char-encoding", L"Character encoding issues"};
@@ -163,6 +166,15 @@ class logger_t {
 
     // Log outside of the usual flog usage.
     void log_extra(const wchar_t *s) { log1(s); }
+
+    // Variant of flogf which is async safe. This is intended to be used after fork().
+    static void flogf_async_safe(const char *category, const char *fmt,
+                                 const char *param1 = nullptr, const char *param2 = nullptr,
+                                 const char *param3 = nullptr, const char *param4 = nullptr,
+                                 const char *param5 = nullptr, const char *param6 = nullptr,
+                                 const char *param7 = nullptr, const char *param8 = nullptr,
+                                 const char *param9 = nullptr, const char *param10 = nullptr,
+                                 const char *param11 = nullptr, const char *param12 = nullptr);
 };
 
 extern owning_lock<logger_t> g_logger;
@@ -170,7 +182,7 @@ extern owning_lock<logger_t> g_logger;
 }  // namespace flog_details
 
 /// Set the active flog categories according to the given wildcard \p wc.
-void activate_flog_categories_by_pattern(const wcstring &wc);
+void activate_flog_categories_by_pattern(wcstring wc);
 
 /// Set the file that flog should output to.
 /// flog does not close this file.
@@ -204,6 +216,17 @@ void log_extra_to_flog_file(const wcstring &s);
                 flog_details::category_list_t::g_instance->wht, __VA_ARGS__); \
             errno = old_errno;                                                \
         }                                                                     \
+    } while (0)
+
+/// Variant of FLOG which is safe to use after fork().
+/// Only %s specifiers are supported.
+#define FLOGF_SAFE(wht, ...)                                             \
+    do {                                                                 \
+        if (flog_details::category_list_t::g_instance->wht.enabled) {    \
+            auto old_errno = errno;                                      \
+            flog_details::logger_t::flogf_async_safe(#wht, __VA_ARGS__); \
+            errno = old_errno;                                           \
+        }                                                                \
     } while (0)
 
 #endif

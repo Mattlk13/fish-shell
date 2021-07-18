@@ -1,4 +1,12 @@
 #RUN: %fish -C "set fish %fish" %s
+# This hangs when running on github actions with tsan for unknown reasons,
+# see #7934.
+#REQUIRES: test -z "$GITHUB_WORKFLOW"
+
+# We typically try to force a utf8-capable locale,
+# this turns that off.
+set -gx fish_allow_singlebyte_locale 1
+
 # A function to display bytes, necessary because GNU and BSD implementations of `od` have different output.
 # We used to use xxd, but it's not available everywhere. See #3797.
 #

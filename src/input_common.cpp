@@ -36,95 +36,86 @@
 #define WAIT_ON_ESCAPE_DEFAULT 30
 static int wait_on_escape_ms = WAIT_ON_ESCAPE_DEFAULT;
 
-/// Callback function for handling interrupts on reading.
-static interrupt_func_t interrupt_handler;
+input_event_queue_t::input_event_queue_t(int in) : in_(in) {}
 
-void input_common_init(interrupt_func_t func) { interrupt_handler = func; }
+/// Internal function used by readch to read one byte.
+/// This calls select() on three fds: input (e.g. stdin), the ioport notifier fd (for main thread
+/// requests), and the uvar notifier. This returns either the byte which was read, or one of the
+/// special values below.
+enum {
+    // The in fd has been closed.
+    readb_eof = -1,
 
-/// Internal function used by input_common_readch to read one byte from fd 0. This function should
-/// only be called by input_common_readch().
-char_event_t input_event_queue_t::readb() {
+    // select() was interrupted by a signal.
+    readb_interrupted = -2,
+
+    // Our uvar notifier reported a change (either through poll() or its fd).
+    readb_uvar_notified = -3,
+
+    // Our ioport reported a change, so service main thread requests.
+    readb_ioport_notified = -4,
+};
+using readb_result_t = int;
+
+static readb_result_t readb(int in_fd) {
+    assert(in_fd >= 0 && "Invalid in fd");
+    universal_notifier_t& notifier = universal_notifier_t::default_notifier();
+    select_wrapper_t fdset;
     for (;;) {
-        fd_set fdset;
-        int fd_max = in_;
-        int ioport = iothread_port();
-        int res;
+        fdset.clear();
+        fdset.add(in_fd);
 
-        FD_ZERO(&fdset);
-        FD_SET(in_, &fdset);
-        if (ioport > 0) {
-            FD_SET(ioport, &fdset);
-            fd_max = std::max(fd_max, ioport);
-        }
+        // Add the completion ioport.
+        int ioport_fd = iothread_port();
+        fdset.add(ioport_fd);
 
-        // Get our uvar notifier.
-        universal_notifier_t& notifier = universal_notifier_t::default_notifier();
-
-        // Get the notification fd (possibly none).
+        // Get the uvar notifier fd (possibly none).
         int notifier_fd = notifier.notification_fd();
-        if (notifier_fd > 0) {
-            FD_SET(notifier_fd, &fdset);
-            fd_max = std::max(fd_max, notifier_fd);
-        }
+        fdset.add(notifier_fd);
 
         // Get its suggested delay (possibly none).
-        struct timeval tv = {};
-        const unsigned long usecs_delay = notifier.usec_delay_between_polls();
-        if (usecs_delay > 0) {
-            unsigned long usecs_per_sec = 1000000;
-            tv.tv_sec = static_cast<int>(usecs_delay / usecs_per_sec);
-            tv.tv_usec = static_cast<int>(usecs_delay % usecs_per_sec);
+        // Note a 0 here means do not poll.
+        uint64_t timeout = select_wrapper_t::kNoTimeout;
+        if (uint64_t usecs_delay = notifier.usec_delay_between_polls()) {
+            timeout = usecs_delay;
         }
 
-        res = select(fd_max + 1, &fdset, nullptr, nullptr, usecs_delay > 0 ? &tv : nullptr);
-        if (res == -1) {
+        // Here's where we call select().
+        int select_res = fdset.select(timeout);
+        if (select_res < 0) {
             if (errno == EINTR || errno == EAGAIN) {
-                if (interrupt_handler) {
-                    if (auto interrupt_evt = interrupt_handler()) {
-                        return *interrupt_evt;
-                    } else if (auto mc = pop_discard_timeouts()) {
-                        return *mc;
-                    }
-                }
+                // A signal.
+                return readb_interrupted;
             } else {
+                // Some fd was invalid, so probably the tty has been closed.
+                return readb_eof;
+            }
+        }
+
+        // select() did not return an error, so we may have a readable fd.
+        // The priority order is: uvars, stdin, ioport.
+        // Check to see if we want a universal variable barrier.
+        // This may come about through readability, or through a call to poll().
+        if ((fdset.test(notifier_fd) && notifier.notification_fd_became_readable(notifier_fd)) ||
+            notifier.poll()) {
+            return readb_uvar_notified;
+        }
+
+        // Check stdin.
+        if (fdset.test(in_fd)) {
+            unsigned char arr[1];
+            if (read_blocked(in_fd, arr, 1) != 1) {
                 // The terminal has been closed.
-                return char_event_type_t::eof;
+                return readb_eof;
             }
-        } else {
-            // Check to see if we want a universal variable barrier.
-            bool barrier_from_poll = notifier.poll();
-            bool barrier_from_readability = false;
-            if (notifier_fd > 0 && FD_ISSET(notifier_fd, &fdset)) {
-                barrier_from_readability = notifier.notification_fd_became_readable(notifier_fd);
-            }
-            if (barrier_from_poll || barrier_from_readability) {
-                if (env_universal_barrier()) {
-                    // A variable change may have triggered a repaint, etc.
-                    if (auto mc = pop_discard_timeouts()) {
-                        return *mc;
-                    }
-                }
-            }
+            // The common path is to return a (non-negative) char.
+            return static_cast<int>(arr[0]);
+        }
 
-            if (FD_ISSET(in_, &fdset)) {
-                unsigned char arr[1];
-                if (read_blocked(in_, arr, 1) != 1) {
-                    // The teminal has been closed.
-                    return char_event_type_t::eof;
-                }
-
-                // We read from stdin, so don't loop.
-                return arr[0];
-            }
-
-            // Check for iothread completions only if there is no data to be read from the stdin.
-            // This gives priority to the foreground.
-            if (ioport > 0 && FD_ISSET(ioport, &fdset)) {
-                iothread_service_completion();
-                if (auto mc = pop_discard_timeouts()) {
-                    return *mc;
-                }
-            }
+        // Check for iothread completions only if there is no data to be read from the stdin.
+        // This gives priority to the foreground.
+        if (fdset.test(ioport_fd)) {
+            return readb_ioport_notified;
         }
     }
 }
@@ -149,83 +140,101 @@ void update_wait_on_escape_ms(const environment_t& vars) {
     }
 }
 
-char_event_t input_event_queue_t::pop() {
-    auto result = queue_.front();
+maybe_t<char_event_t> input_event_queue_t::try_pop() {
+    if (queue_.empty()) {
+        return none();
+    }
+    auto result = std::move(queue_.front());
     queue_.pop_front();
     return result;
 }
 
-maybe_t<char_event_t> input_event_queue_t::pop_discard_timeouts() {
-    while (has_lookahead()) {
-        auto evt = pop();
-        if (!evt.is_timeout()) {
-            return evt;
-        }
-    }
-    return none();
-}
-
 char_event_t input_event_queue_t::readch() {
     ASSERT_IS_MAIN_THREAD();
-    if (auto mc = pop_discard_timeouts()) {
-        return *mc;
-    }
-    wchar_t res;
+    wchar_t res{};
     mbstate_t state = {};
-    while (true) {
-        auto evt = readb();
-        if (!evt.is_char()) {
-            return evt;
+    for (;;) {
+        // Do we have something enqueued already?
+        // Note this may be initially true, or it may become true through calls to
+        // iothread_service_main() or env_universal_barrier() below.
+        if (auto mevt = try_pop()) {
+            return mevt.acquire();
         }
 
-        wint_t b = evt.get_char();
-        if (MB_CUR_MAX == 1) {
-            return b;  // single-byte locale, all values are legal
+        // We are going to block; but first allow any override to inject events.
+        this->prepare_to_select();
+        if (auto mevt = try_pop()) {
+            return mevt.acquire();
         }
 
-        char bb = b;
-        size_t sz = std::mbrtowc(&res, &bb, 1, &state);
+        readb_result_t rr = readb(in_);
+        switch (rr) {
+            case readb_eof:
+                return char_event_type_t::eof;
 
-        switch (sz) {
-            case static_cast<size_t>(-1): {
-                std::memset(&state, '\0', sizeof(state));
-                FLOG(reader, L"Illegal input");
-                return char_event_type_t::check_exit;
-            }
-            case static_cast<size_t>(-2): {
+            case readb_interrupted:
+                // FIXME: here signals may break multibyte sequences.
+                this->select_interrupted();
                 break;
-            }
-            case 0: {
-                return 0;
-            }
+
+            case readb_uvar_notified:
+                env_universal_barrier();
+                break;
+
+            case readb_ioport_notified:
+                iothread_service_main();
+                break;
+
             default: {
-                return res;
+                assert(rr >= 0 && rr <= UCHAR_MAX &&
+                       "Read byte out of bounds - missing error case?");
+                char read_byte = static_cast<char>(static_cast<unsigned char>(rr));
+                if (MB_CUR_MAX == 1) {
+                    // single-byte locale, all values are legal
+                    res = read_byte;
+                    return res;
+                }
+                size_t sz = std::mbrtowc(&res, &read_byte, 1, &state);
+                switch (sz) {
+                    case static_cast<size_t>(-1):
+                        std::memset(&state, '\0', sizeof(state));
+                        FLOG(reader, L"Illegal input");
+                        return char_event_type_t::check_exit;
+
+                    case static_cast<size_t>(-2):
+                        // Sequence not yet complete.
+                        break;
+
+                    case 0:
+                        // Actual nul char.
+                        return 0;
+
+                    default:
+                        // Sequence complete.
+                        return res;
+                }
+                break;
             }
         }
     }
 }
 
-char_event_t input_event_queue_t::readch_timed(bool dequeue_timeouts) {
-    char_event_t result{char_event_type_t::timeout};
-    if (has_lookahead()) {
-        result = pop();
-    } else {
-        fd_set fds;
-        FD_ZERO(&fds);
-        FD_SET(in_, &fds);
-        struct timeval tm = {wait_on_escape_ms / 1000, 1000 * (wait_on_escape_ms % 1000)};
-        if (select(1, &fds, nullptr, nullptr, &tm) > 0) {
-            result = readch();
-        }
+maybe_t<char_event_t> input_event_queue_t::readch_timed() {
+    if (auto evt = try_pop()) {
+        return evt;
     }
-    // If we got a timeout, either through dequeuing or creating, ensure it stays on the queue.
-    if (result.is_timeout()) {
-        if (!dequeue_timeouts) queue_.push_front(char_event_type_t::timeout);
-        return char_event_type_t::timeout;
+    const uint64_t usec_per_msec = 1000;
+    uint64_t timeout_usec = static_cast<uint64_t>(wait_on_escape_ms) * usec_per_msec;
+    if (select_wrapper_t::is_fd_readable(in_, timeout_usec)) {
+        return readch();
     }
-    return result;
+    return none();
 }
 
 void input_event_queue_t::push_back(const char_event_t& ch) { queue_.push_back(ch); }
 
 void input_event_queue_t::push_front(const char_event_t& ch) { queue_.push_front(ch); }
+
+void input_event_queue_t::prepare_to_select() {}
+void input_event_queue_t::select_interrupted() {}
+input_event_queue_t::~input_event_queue_t() = default;

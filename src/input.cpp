@@ -80,84 +80,92 @@ static constexpr size_t input_function_count = R_END_INPUT_FUNCTIONS;
 /// Input function metadata. This list should be kept in sync with the key code list in
 /// input_common.h.
 struct input_function_metadata_t {
-    readline_cmd_t code;
     const wchar_t *name;
+    readline_cmd_t code;
 };
 
-static const input_function_metadata_t input_function_metadata[] = {
-    {readline_cmd_t::beginning_of_line, L"beginning-of-line"},
-    {readline_cmd_t::end_of_line, L"end-of-line"},
-    {readline_cmd_t::forward_char, L"forward-char"},
-    {readline_cmd_t::backward_char, L"backward-char"},
-    {readline_cmd_t::forward_single_char, L"forward-single-char"},
-    {readline_cmd_t::forward_word, L"forward-word"},
-    {readline_cmd_t::backward_word, L"backward-word"},
-    {readline_cmd_t::forward_bigword, L"forward-bigword"},
-    {readline_cmd_t::backward_bigword, L"backward-bigword"},
-    {readline_cmd_t::history_prefix_search_backward, L"history-prefix-search-backward"},
-    {readline_cmd_t::history_prefix_search_forward, L"history-prefix-search-forward"},
-    {readline_cmd_t::history_search_backward, L"history-search-backward"},
-    {readline_cmd_t::history_search_forward, L"history-search-forward"},
-    {readline_cmd_t::delete_char, L"delete-char"},
-    {readline_cmd_t::backward_delete_char, L"backward-delete-char"},
-    {readline_cmd_t::kill_line, L"kill-line"},
-    {readline_cmd_t::yank, L"yank"},
-    {readline_cmd_t::yank_pop, L"yank-pop"},
-    {readline_cmd_t::complete, L"complete"},
-    {readline_cmd_t::complete_and_search, L"complete-and-search"},
-    {readline_cmd_t::pager_toggle_search, L"pager-toggle-search"},
-    {readline_cmd_t::beginning_of_history, L"beginning-of-history"},
-    {readline_cmd_t::end_of_history, L"end-of-history"},
-    {readline_cmd_t::backward_kill_line, L"backward-kill-line"},
-    {readline_cmd_t::kill_whole_line, L"kill-whole-line"},
-    {readline_cmd_t::kill_word, L"kill-word"},
-    {readline_cmd_t::kill_bigword, L"kill-bigword"},
-    {readline_cmd_t::backward_kill_word, L"backward-kill-word"},
-    {readline_cmd_t::backward_kill_path_component, L"backward-kill-path-component"},
-    {readline_cmd_t::backward_kill_bigword, L"backward-kill-bigword"},
-    {readline_cmd_t::history_token_search_backward, L"history-token-search-backward"},
-    {readline_cmd_t::history_token_search_forward, L"history-token-search-forward"},
-    {readline_cmd_t::self_insert, L"self-insert"},
-    {readline_cmd_t::self_insert_notfirst, L"self-insert-notfirst"},
-    {readline_cmd_t::transpose_chars, L"transpose-chars"},
-    {readline_cmd_t::transpose_words, L"transpose-words"},
-    {readline_cmd_t::upcase_word, L"upcase-word"},
-    {readline_cmd_t::downcase_word, L"downcase-word"},
-    {readline_cmd_t::capitalize_word, L"capitalize-word"},
-    {readline_cmd_t::togglecase_char, L"togglecase-char"},
-    {readline_cmd_t::togglecase_selection, L"togglecase-selection"},
-    {readline_cmd_t::execute, L"execute"},
-    {readline_cmd_t::beginning_of_buffer, L"beginning-of-buffer"},
-    {readline_cmd_t::end_of_buffer, L"end-of-buffer"},
-    {readline_cmd_t::repaint_mode, L"repaint-mode"},
-    {readline_cmd_t::repaint, L"repaint"},
-    {readline_cmd_t::force_repaint, L"force-repaint"},
-    {readline_cmd_t::up_line, L"up-line"},
-    {readline_cmd_t::down_line, L"down-line"},
-    {readline_cmd_t::suppress_autosuggestion, L"suppress-autosuggestion"},
-    {readline_cmd_t::accept_autosuggestion, L"accept-autosuggestion"},
-    {readline_cmd_t::begin_selection, L"begin-selection"},
-    {readline_cmd_t::swap_selection_start_stop, L"swap-selection-start-stop"},
-    {readline_cmd_t::end_selection, L"end-selection"},
-    {readline_cmd_t::kill_selection, L"kill-selection"},
-    {readline_cmd_t::insert_line_under, L"insert-line-under"},
-    {readline_cmd_t::insert_line_over, L"insert-line-over"},
-    {readline_cmd_t::forward_jump, L"forward-jump"},
-    {readline_cmd_t::backward_jump, L"backward-jump"},
-    {readline_cmd_t::forward_jump_till, L"forward-jump-till"},
-    {readline_cmd_t::backward_jump_till, L"backward-jump-till"},
-    {readline_cmd_t::repeat_jump, L"repeat-jump"},
-    {readline_cmd_t::reverse_repeat_jump, L"repeat-jump-reverse"},
-    {readline_cmd_t::func_and, L"and"},
-    {readline_cmd_t::func_or, L"or"},
-    {readline_cmd_t::expand_abbr, L"expand-abbr"},
-    {readline_cmd_t::delete_or_exit, L"delete-or-exit"},
-    {readline_cmd_t::cancel_commandline, L"cancel-commandline"},
-    {readline_cmd_t::cancel, L"cancel"},
-    {readline_cmd_t::undo, L"undo"},
-    {readline_cmd_t::redo, L"redo"},
+/// A static mapping of all readline commands as strings to their readline_cmd_t equivalent.
+/// Keep this list sorted alphabetically!
+static constexpr const input_function_metadata_t input_function_metadata[] = {
+    // NULL makes it unusable - this is specially inserted when we detect mouse input
+    {L"", readline_cmd_t::disable_mouse_tracking},
+    {L"accept-autosuggestion", readline_cmd_t::accept_autosuggestion},
+    {L"and", readline_cmd_t::func_and},
+    {L"backward-bigword", readline_cmd_t::backward_bigword},
+    {L"backward-char", readline_cmd_t::backward_char},
+    {L"backward-delete-char", readline_cmd_t::backward_delete_char},
+    {L"backward-jump", readline_cmd_t::backward_jump},
+    {L"backward-jump-till", readline_cmd_t::backward_jump_till},
+    {L"backward-kill-bigword", readline_cmd_t::backward_kill_bigword},
+    {L"backward-kill-line", readline_cmd_t::backward_kill_line},
+    {L"backward-kill-path-component", readline_cmd_t::backward_kill_path_component},
+    {L"backward-kill-word", readline_cmd_t::backward_kill_word},
+    {L"backward-word", readline_cmd_t::backward_word},
+    {L"begin-selection", readline_cmd_t::begin_selection},
+    {L"begin-undo-group", readline_cmd_t::begin_undo_group},
+    {L"beginning-of-buffer", readline_cmd_t::beginning_of_buffer},
+    {L"beginning-of-history", readline_cmd_t::beginning_of_history},
+    {L"beginning-of-line", readline_cmd_t::beginning_of_line},
+    {L"cancel", readline_cmd_t::cancel},
+    {L"cancel-commandline", readline_cmd_t::cancel_commandline},
+    {L"capitalize-word", readline_cmd_t::capitalize_word},
+    {L"complete", readline_cmd_t::complete},
+    {L"complete-and-search", readline_cmd_t::complete_and_search},
+    {L"delete-char", readline_cmd_t::delete_char},
+    {L"delete-or-exit", readline_cmd_t::delete_or_exit},
+    {L"down-line", readline_cmd_t::down_line},
+    {L"downcase-word", readline_cmd_t::downcase_word},
+    {L"end-of-buffer", readline_cmd_t::end_of_buffer},
+    {L"end-of-history", readline_cmd_t::end_of_history},
+    {L"end-of-line", readline_cmd_t::end_of_line},
+    {L"end-selection", readline_cmd_t::end_selection},
+    {L"end-undo-group", readline_cmd_t::end_undo_group},
+    {L"execute", readline_cmd_t::execute},
+    {L"exit", readline_cmd_t::exit},
+    {L"expand-abbr", readline_cmd_t::expand_abbr},
+    {L"force-repaint", readline_cmd_t::force_repaint},
+    {L"forward-bigword", readline_cmd_t::forward_bigword},
+    {L"forward-char", readline_cmd_t::forward_char},
+    {L"forward-jump", readline_cmd_t::forward_jump},
+    {L"forward-jump-till", readline_cmd_t::forward_jump_till},
+    {L"forward-single-char", readline_cmd_t::forward_single_char},
+    {L"forward-word", readline_cmd_t::forward_word},
+    {L"history-prefix-search-backward", readline_cmd_t::history_prefix_search_backward},
+    {L"history-prefix-search-forward", readline_cmd_t::history_prefix_search_forward},
+    {L"history-search-backward", readline_cmd_t::history_search_backward},
+    {L"history-search-forward", readline_cmd_t::history_search_forward},
+    {L"history-token-search-backward", readline_cmd_t::history_token_search_backward},
+    {L"history-token-search-forward", readline_cmd_t::history_token_search_forward},
+    {L"insert-line-over", readline_cmd_t::insert_line_over},
+    {L"insert-line-under", readline_cmd_t::insert_line_under},
+    {L"kill-bigword", readline_cmd_t::kill_bigword},
+    {L"kill-line", readline_cmd_t::kill_line},
+    {L"kill-selection", readline_cmd_t::kill_selection},
+    {L"kill-whole-line", readline_cmd_t::kill_whole_line},
+    {L"kill-word", readline_cmd_t::kill_word},
+    {L"or", readline_cmd_t::func_or},
+    {L"pager-toggle-search", readline_cmd_t::pager_toggle_search},
+    {L"redo", readline_cmd_t::redo},
+    {L"repaint", readline_cmd_t::repaint},
+    {L"repaint-mode", readline_cmd_t::repaint_mode},
+    {L"repeat-jump", readline_cmd_t::repeat_jump},
+    {L"repeat-jump-reverse", readline_cmd_t::reverse_repeat_jump},
+    {L"self-insert", readline_cmd_t::self_insert},
+    {L"self-insert-notfirst", readline_cmd_t::self_insert_notfirst},
+    {L"suppress-autosuggestion", readline_cmd_t::suppress_autosuggestion},
+    {L"swap-selection-start-stop", readline_cmd_t::swap_selection_start_stop},
+    {L"togglecase-char", readline_cmd_t::togglecase_char},
+    {L"togglecase-selection", readline_cmd_t::togglecase_selection},
+    {L"transpose-chars", readline_cmd_t::transpose_chars},
+    {L"transpose-words", readline_cmd_t::transpose_words},
+    {L"undo", readline_cmd_t::undo},
+    {L"up-line", readline_cmd_t::up_line},
+    {L"upcase-word", readline_cmd_t::upcase_word},
+    {L"yank", readline_cmd_t::yank},
+    {L"yank-pop", readline_cmd_t::yank_pop},
 };
 
+ASSERT_SORTED_BY_NAME(input_function_metadata);
 static_assert(sizeof(input_function_metadata) / sizeof(input_function_metadata[0]) ==
                   input_function_count,
               "input_function_metadata size mismatch with input_common. Did you forget to update "
@@ -264,28 +272,6 @@ void input_mapping_set_t::add(wcstring sequence, const wchar_t *command, const w
     input_mapping_set_t::add(std::move(sequence), &command, 1, mode, sets_mode, user);
 }
 
-/// Handle interruptions to key reading by reaping finished jobs and propagating the interrupt to
-/// the reader.
-static maybe_t<char_event_t> interrupt_handler() {
-    // Fire any pending events.
-    // TODO: eliminate this principal_parser().
-    auto &parser = parser_t::principal_parser();
-    event_fire_delayed(parser);
-    // Reap stray processes, including printing exit status messages.
-    // TODO: shouldn't need this parser here.
-    if (job_reap(parser, true)) reader_schedule_prompt_repaint();
-    // Tell the reader an event occurred.
-    if (reader_reading_interrupted()) {
-        auto vintr = shell_modes.c_cc[VINTR];
-        if (vintr == 0) {
-            return none();
-        }
-        return char_event_t{vintr};
-    }
-
-    return char_event_t{char_event_type_t::check_exit};
-}
-
 static relaxed_atomic_bool_t s_input_initialized{false};
 
 /// Set up arrays used by readch to detect escape sequences for special keys and perform related
@@ -295,7 +281,6 @@ void init_input() {
     if (s_input_initialized) return;
     s_input_initialized = true;
 
-    input_common_init(&interrupt_handler);
     s_terminfo_mappings = create_input_terminfo();
 
     auto input_mapping = input_mappings();
@@ -306,9 +291,17 @@ void init_input() {
         input_mapping->add(L"\n", L"execute", DEFAULT_BIND_MODE, DEFAULT_BIND_MODE, false);
         input_mapping->add(L"\r", L"execute", DEFAULT_BIND_MODE, DEFAULT_BIND_MODE, false);
         input_mapping->add(L"\t", L"complete", DEFAULT_BIND_MODE, DEFAULT_BIND_MODE, false);
-        input_mapping->add(L"\x3", L"commandline ''", DEFAULT_BIND_MODE, DEFAULT_BIND_MODE, false);
+        input_mapping->add(L"\x3", L"cancel-commandline", DEFAULT_BIND_MODE, DEFAULT_BIND_MODE,
+                           false);
         input_mapping->add(L"\x4", L"exit", DEFAULT_BIND_MODE, DEFAULT_BIND_MODE, false);
         input_mapping->add(L"\x5", L"bind", DEFAULT_BIND_MODE, DEFAULT_BIND_MODE, false);
+        // ctrl-s
+        input_mapping->add(L"\x13", L"pager-toggle-search", DEFAULT_BIND_MODE, DEFAULT_BIND_MODE,
+                           false);
+        // ctrl-u
+        input_mapping->add(L"\x15", L"backward-kill-line", DEFAULT_BIND_MODE, DEFAULT_BIND_MODE,
+                           false);
+        // del/backspace
         input_mapping->add(L"\x7f", L"backward-delete-char", DEFAULT_BIND_MODE, DEFAULT_BIND_MODE,
                            false);
         // Arrows - can't have functions, so *-or-search isn't available.
@@ -317,10 +310,44 @@ void init_input() {
         input_mapping->add(L"\x1B[C", L"forward-char", DEFAULT_BIND_MODE, DEFAULT_BIND_MODE, false);
         input_mapping->add(L"\x1B[D", L"backward-char", DEFAULT_BIND_MODE, DEFAULT_BIND_MODE,
                            false);
+        // emacs-style ctrl-p/n/b/f
+        input_mapping->add(L"\x10", L"up-line", DEFAULT_BIND_MODE, DEFAULT_BIND_MODE, false);
+        input_mapping->add(L"\x0e", L"down-line", DEFAULT_BIND_MODE, DEFAULT_BIND_MODE, false);
+        input_mapping->add(L"\x02", L"backward-char", DEFAULT_BIND_MODE, DEFAULT_BIND_MODE, false);
+        input_mapping->add(L"\x06", L"forward-char", DEFAULT_BIND_MODE, DEFAULT_BIND_MODE, false);
     }
 }
 
-inputter_t::inputter_t(parser_t &parser, int in) : event_queue_(in), parser_(parser.shared()) {}
+inputter_t::inputter_t(parser_t &parser, int in)
+    : input_event_queue_t(in), parser_(parser.shared()) {}
+
+void inputter_t::prepare_to_select() /* override */ {
+    // Fire any pending events and reap stray processes, including printing exit status messages.
+    auto &parser = *this->parser_;
+    event_fire_delayed(parser);
+    if (job_reap(parser, true)) reader_schedule_prompt_repaint();
+}
+
+void inputter_t::select_interrupted() /* override */ {
+    // Readline commands may be bound to \cc which also sets the cancel flag.
+    // See #6937, #8125.
+    signal_clear_cancel();
+
+    // Fire any pending events and reap stray processes, including printing exit status messages.
+    auto &parser = *this->parser_;
+    event_fire_delayed(parser);
+    if (job_reap(parser, true)) reader_schedule_prompt_repaint();
+
+    // Tell the reader an event occurred.
+    if (reader_reading_interrupted()) {
+        auto vintr = shell_modes.c_cc[VINTR];
+        if (vintr != 0) {
+            this->push_front(char_event_t{vintr});
+        }
+        return;
+    }
+    this->push_front(char_event_t{char_event_type_t::check_exit});
+}
 
 void inputter_t::function_push_arg(wchar_t arg) { input_function_args_.push_back(arg); }
 
@@ -333,13 +360,15 @@ wchar_t inputter_t::function_pop_arg() {
 
 void inputter_t::function_push_args(readline_cmd_t code) {
     int arity = input_function_arity(code);
-    std::vector<char_event_t> skipped;
+    // Use a thread-local to prevent constant heap thrashing in the main input loop
+    static FISH_THREAD_LOCAL std::vector<char_event_t> skipped;
+    skipped.clear();
 
     for (int i = 0; i < arity; i++) {
         // Skip and queue up any function codes. See issue #2357.
         wchar_t arg{};
         for (;;) {
-            auto evt = event_queue_.readch();
+            auto evt = this->readch();
             if (evt.is_char()) {
                 arg = evt.get_char();
                 break;
@@ -350,10 +379,7 @@ void inputter_t::function_push_args(readline_cmd_t code) {
     }
 
     // Push the function codes back into the input stream.
-    size_t idx = skipped.size();
-    while (idx--) {
-        event_queue_.push_front(skipped.at(idx));
-    }
+    this->insert_front(skipped.begin(), skipped.end());
 }
 
 /// Perform the action of the specified binding. allow_commands controls whether fish commands
@@ -370,6 +396,10 @@ void inputter_t::mapping_execute(const input_mapping_t &m,
         } else {
             has_commands = true;
         }
+
+        if (has_functions && has_commands) {
+            break;
+        }
     }
 
     // !has_functions && !has_commands: only set bind mode
@@ -380,18 +410,15 @@ void inputter_t::mapping_execute(const input_mapping_t &m,
 
     if (has_commands && !command_handler) {
         // We don't want to run commands yet. Put the characters back and return check_exit.
-        for (wcstring::const_reverse_iterator it = m.seq.rbegin(), end = m.seq.rend(); it != end;
-             ++it) {
-            event_queue_.push_front(*it);
-        }
-        event_queue_.push_front(char_event_type_t::check_exit);
+        this->insert_front(m.seq.cbegin(), m.seq.cend());
+        this->push_front(char_event_type_t::check_exit);
         return;  // skip the input_set_bind_mode
     } else if (has_functions && !has_commands) {
         // Functions are added at the head of the input queue.
         for (auto it = m.commands.rbegin(), end = m.commands.rend(); it != end; ++it) {
             readline_cmd_t code = input_function_get_code(*it).value();
             function_push_args(code);
-            event_queue_.push_front(char_event_t(code, m.seq));
+            this->push_front(char_event_t(code, m.seq));
         }
     } else if (has_commands && !has_functions) {
         // Execute all commands.
@@ -399,55 +426,174 @@ void inputter_t::mapping_execute(const input_mapping_t &m,
         // FIXME(snnw): if commands add stuff to input queue (e.g. commandline -f execute), we won't
         // see that until all other commands have also been run.
         command_handler(m.commands);
-        event_queue_.push_front(char_event_type_t::check_exit);
+        this->push_front(char_event_type_t::check_exit);
     } else {
         // Invalid binding, mixed commands and functions.  We would need to execute these one by
         // one.
-        event_queue_.push_front(char_event_type_t::check_exit);
+        this->push_front(char_event_type_t::check_exit);
     }
 
     // Empty bind mode indicates to not reset the mode (#2871)
     if (!m.sets_mode.empty()) input_set_bind_mode(*parser_, m.sets_mode);
 }
 
-/// Try reading the specified function mapping.
-bool inputter_t::mapping_is_match(const input_mapping_t &m) {
-    const wcstring &str = m.seq;
-
-    assert(!str.empty() && "zero-length input string passed to mapping_is_match!");
-
-    bool timed = false;
-    for (size_t i = 0; i < str.size(); ++i) {
-        auto evt = timed ? event_queue_.readch_timed() : event_queue_.readch();
-        if (!evt.is_char() || evt.get_char() != str[i]) {
-            // We didn't match the bind sequence/input mapping, (it timed out or they entered
-            // something else) Undo consumption of the read characters since we didn't match the
-            // bind sequence and abort.
-            event_queue_.push_front(evt);
-            while (i--) event_queue_.push_front(str[i]);
-            return false;
-        }
-
-        // If we just read an escape, we need to add a timeout for the next char,
-        // to distinguish between the actual escape key and an "alt"-modifier.
-        timed = (str[i] == L'\x1B');
-    }
-
-    return true;
-}
-
-void inputter_t::queue_ch(const char_event_t &ch) {
+void inputter_t::queue_char(const char_event_t &ch) {
     if (ch.is_readline()) {
         function_push_args(ch.get_readline());
     }
-    event_queue_.push_back(ch);
+    this->push_back(ch);
 }
 
-void inputter_t::push_front(const char_event_t &ch) { event_queue_.push_front(ch); }
+/// A class which allows accumulating input events, or returns them to the queue.
+/// This contains a list of events which have been dequeued, and a current index into that list.
+class event_queue_peeker_t {
+   public:
+    explicit event_queue_peeker_t(input_event_queue_t &event_queue) : event_queue_(event_queue) {}
+
+    /// \return the next event.
+    char_event_t next() {
+        assert(idx_ <= peeked_.size() && "Index must not be larger than dequeued event count");
+        if (idx_ == peeked_.size()) {
+            auto event = event_queue_.readch();
+            peeked_.push_back(event);
+        }
+        return peeked_.at(idx_++);
+    }
+
+    /// Check if the next event is the given character. This advances the index on success only.
+    /// If \p timed is set, then return false if this (or any other) character had a timeout.
+    bool next_is_char(wchar_t c, bool timed = false) {
+        assert(idx_ <= peeked_.size() && "Index must not be larger than dequeued event count");
+        // See if we had a timeout already.
+        if (timed && had_timeout_) {
+            return false;
+        }
+        // Grab a new event if we have exhausted what we have already peeked.
+        // Use either readch or readch_timed, per our param.
+        if (idx_ == peeked_.size()) {
+            char_event_t newevt{L'\0'};
+            if (!timed) {
+                newevt = event_queue_.readch();
+            } else if (auto mevt = event_queue_.readch_timed()) {
+                newevt = mevt.acquire();
+            } else {
+                had_timeout_ = true;
+                return false;
+            }
+            peeked_.push_back(newevt);
+        }
+        // Now we have peeked far enough; check the event.
+        // If it matches the char, then increment the index.
+        if (peeked_.at(idx_).maybe_char() == c) {
+            idx_++;
+            return true;
+        }
+        return false;
+    }
+
+    /// \return the current index.
+    size_t len() const { return idx_; }
+
+    /// Consume all events up to the current index.
+    /// Remaining events are returned to the queue.
+    void consume() {
+        event_queue_.insert_front(peeked_.cbegin() + idx_, peeked_.cend());
+        peeked_.clear();
+        idx_ = 0;
+    }
+
+    /// Reset our index back to 0.
+    void restart() { idx_ = 0; }
+
+    ~event_queue_peeker_t() {
+        assert(idx_ == 0 && "Events left on the queue - missing restart or consume?");
+        consume();
+    }
+
+   private:
+    /// The list of events which have been dequeued.
+    std::vector<char_event_t> peeked_{};
+
+    /// If set, then some previous timed event timed out.
+    bool had_timeout_{false};
+
+    /// The current index. This never exceeds peeked_.size().
+    size_t idx_{0};
+
+    /// The queue from which to read more events.
+    input_event_queue_t &event_queue_;
+};
+
+/// Try reading a mouse-tracking CSI sequence, using the given \p peeker.
+/// Events are left on the peeker and the caller must restart or consume it.
+/// \return true if matched, false if not.
+static bool have_mouse_tracking_csi(event_queue_peeker_t *peeker) {
+    // Maximum length of any CSI is NPAR (which is nominally 16), although this does not account for
+    // user input intermixed with pseudo input generated by the tty emulator.
+    // Check for the CSI first.
+    if (!peeker->next_is_char(L'\x1b') || !peeker->next_is_char(L'[', true /* timed */)) {
+        return false;
+    }
+
+    auto next = peeker->next().maybe_char();
+    size_t length = 0;
+    if (next == L'M') {
+        // Generic X10 or modified VT200 sequence. It doesn't matter which, they're both 6 chars
+        // (although in mode 1005, the characters may be unicode and not necessarily just one byte
+        // long) reporting the button that was clicked and its location.
+        length = 6;
+    } else if (next == L'<') {
+        // Extended (SGR/1006) mouse reporting mode, with semicolon-separated parameters for button
+        // code, Px, and Py, ending with 'M' for button press or 'm' for button release.
+        while (true) {
+            next = peeker->next().maybe_char();
+            if (next == L'M' || next == L'm') {
+                // However much we've read, we've consumed the CSI in its entirety.
+                length = peeker->len();
+                break;
+            }
+            if (peeker->len() >= 16) {
+                // This is likely a malformed mouse-reporting CSI but we can't do anything about it.
+                return false;
+            }
+        }
+    } else if (next == L't') {
+        // VT200 button released in mouse highlighting mode at valid text location. 5 chars.
+        length = 5;
+    } else if (next == L'T') {
+        // VT200 button released in mouse highlighting mode past end-of-line. 9 characters.
+        length = 9;
+    } else {
+        return false;
+    }
+
+    // Consume however many characters it takes to prevent the mouse tracking sequence from reaching
+    // the prompt, dependent on the class of mouse reporting as detected above.
+    while (peeker->len() < length) {
+        (void)peeker->next();
+    }
+    return true;
+}
+
+/// \return true if a given \p peeker matches a given sequence of char events given by \p str.
+static bool try_peek_sequence(event_queue_peeker_t *peeker, const wcstring &str) {
+    assert(!str.empty() && "Empty string passed to try_peek_sequence");
+    wchar_t prev = L'\0';
+    for (wchar_t c : str) {
+        // If we just read an escape, we need to add a timeout for the next char,
+        // to distinguish between the actual escape key and an "alt"-modifier.
+        bool timed = prev == L'\x1B';
+        if (!peeker->next_is_char(c, timed)) {
+            return false;
+        }
+        prev = c;
+    }
+    return true;
+}
 
 /// \return the first mapping that matches, walking first over the user's mapping list, then the
 /// preset list. \return null if nothing matches.
-maybe_t<input_mapping_t> inputter_t::find_mapping() {
+maybe_t<input_mapping_t> inputter_t::find_mapping(event_queue_peeker_t *peeker) {
     const input_mapping_t *generic = nullptr;
     const auto &vars = parser_->vars();
     const wcstring bind_mode = input_get_bind_mode(vars);
@@ -458,34 +604,74 @@ maybe_t<input_mapping_t> inputter_t::find_mapping() {
             continue;
         }
 
+        // Defer generic mappings until the end.
         if (m.is_generic()) {
             if (!generic) generic = &m;
-        } else if (mapping_is_match(m)) {
+            continue;
+        }
+
+        if (try_peek_sequence(peeker, m.seq)) {
             return m;
         }
+        peeker->restart();
     }
     return generic ? maybe_t<input_mapping_t>(*generic) : none();
 }
 
 void inputter_t::mapping_execute_matching_or_generic(const command_handler_t &command_handler) {
-    if (auto mapping = find_mapping()) {
-        mapping_execute(*mapping, command_handler);
-    } else {
-        FLOGF(reader, L"no generic found, ignoring char...");
-        auto evt = event_queue_.readch();
-        if (evt.is_eof()) {
-            event_queue_.push_front(evt);
-        }
+    event_queue_peeker_t peeker(*this);
+
+    // Check for mouse-tracking CSI before mappings to prevent the generic mapping handler from
+    // taking over.
+    if (have_mouse_tracking_csi(&peeker)) {
+        // fish recognizes but does not actually support mouse reporting. We never turn it on, and
+        // it's only ever enabled if a program we spawned enabled it and crashed or forgot to turn
+        // it off before exiting. We swallow the events to prevent garbage from piling up at the
+        // prompt, but don't do anything further with the received codes. To prevent this from
+        // breaking user interaction with the tty emulator, wasting CPU, and adding latency to the
+        // event queue, we turn off mouse reporting here.
+        //
+        // Since this is only called when we detect an incoming mouse reporting payload, we know the
+        // terminal emulator supports the xterm ANSI extensions for mouse reporting and can safely
+        // issue this without worrying about termcap.
+        FLOGF(reader, "Disabling mouse tracking");
+
+        // We can't/shouldn't directly manipulate stdout from `input.cpp`, so request the execution
+        // of a helper function to disable mouse tracking.
+        // writembs(outputter_t::stdoutput(), "\x1B[?1000l");
+        peeker.consume();
+        this->push_front(char_event_t(readline_cmd_t::disable_mouse_tracking, L""));
+        return;
     }
+    peeker.restart();
+
+    // Check for ordinary mappings.
+    if (auto mapping = find_mapping(&peeker)) {
+        peeker.consume();
+        mapping_execute(*mapping, command_handler);
+        return;
+    }
+    peeker.restart();
+
+    FLOGF(reader, L"no generic found, ignoring char...");
+    auto evt = peeker.next();
+    if (evt.is_eof()) {
+        this->push_front(evt);
+    }
+    peeker.consume();
 }
 
 /// Helper function. Picks through the queue of incoming characters until we get to one that's not a
 /// readline function.
 char_event_t inputter_t::read_characters_no_readline() {
-    std::vector<char_event_t> saved_events;
+    // Use a thread-local vector to prevent repeated heap allocation, as this is called in the main
+    // input loop.
+    static FISH_THREAD_LOCAL std::vector<char_event_t> saved_events;
+    saved_events.clear();
+
     char_event_t evt_to_return{0};
     for (;;) {
-        auto evt = event_queue_.readch();
+        auto evt = this->readch();
         if (evt.is_readline()) {
             saved_events.push_back(evt);
         } else {
@@ -493,19 +679,18 @@ char_event_t inputter_t::read_characters_no_readline() {
             break;
         }
     }
-    // Restore any readline functions, in reverse to preserve their original order.
-    for (auto iter = saved_events.rbegin(); iter != saved_events.rend(); ++iter) {
-        event_queue_.push_front(*iter);
-    }
+
+    // Restore any readline functions
+    this->insert_front(saved_events.cbegin(), saved_events.cend());
     return evt_to_return;
 }
 
-char_event_t inputter_t::readch(const command_handler_t &command_handler) {
+char_event_t inputter_t::read_char(const command_handler_t &command_handler) {
     // Clear the interrupted flag.
     reader_reset_interrupted();
     // Search for sequence in mapping tables.
     while (true) {
-        auto evt = event_queue_.readch();
+        auto evt = this->readch();
 
         if (evt.is_readline()) {
             switch (evt.get_readline()) {
@@ -513,9 +698,7 @@ char_event_t inputter_t::readch(const command_handler_t &command_handler) {
                 case readline_cmd_t::self_insert_notfirst: {
                     // Typically self-insert is generated by the generic (empty) binding.
                     // However if it is generated by a real sequence, then insert that sequence.
-                    for (auto iter = evt.seq.crbegin(); iter != evt.seq.crend(); ++iter) {
-                        event_queue_.push_front(*iter);
-                    }
+                    this->insert_front(evt.seq.cbegin(), evt.seq.cend());
                     // Issue #1595: ensure we only insert characters, not readline functions. The
                     // common case is that this will be empty.
                     char_event_t res = read_characters_no_readline();
@@ -537,9 +720,9 @@ char_event_t inputter_t::readch(const command_handler_t &command_handler) {
                     }
                     // Else we flush remaining tokens
                     do {
-                        evt = event_queue_.readch();
+                        evt = this->readch();
                     } while (evt.is_readline());
-                    event_queue_.push_front(evt);
+                    this->push_front(evt);
                     return readch();
                 }
                 default: {
@@ -551,7 +734,7 @@ char_event_t inputter_t::readch(const command_handler_t &command_handler) {
             // There's no need to go through the input functions.
             return evt;
         } else {
-            event_queue_.push_front(evt);
+            this->push_front(evt);
             mapping_execute_matching_or_generic(command_handler);
             // Regarding allow_commands, we're in a loop, but if a fish command is executed,
             // check_exit is unread, so the next pass through the loop we'll break out and return
@@ -674,7 +857,6 @@ static std::vector<terminfo_mapping_t> create_input_terminfo() {
 }
 
 bool input_terminfo_get_sequence(const wcstring &name, wcstring *out_seq) {
-    ASSERT_IS_MAIN_THREAD();
     assert(s_input_initialized);
     for (const terminfo_mapping_t &m : *s_terminfo_mappings) {
         if (name == m.name) {
@@ -707,6 +889,7 @@ bool input_terminfo_get_name(const wcstring &seq, wcstring *out_name) {
 
 wcstring_list_t input_terminfo_get_names(bool skip_null) {
     assert(s_input_initialized);
+
     wcstring_list_t result;
     const auto &mappings = *s_terminfo_mappings;
     result.reserve(mappings.size());
@@ -719,20 +902,35 @@ wcstring_list_t input_terminfo_get_names(bool skip_null) {
     return result;
 }
 
-wcstring_list_t input_function_get_names() {
-    wcstring_list_t result;
-    result.reserve(input_function_count);
-    for (const auto &md : input_function_metadata) {
-        result.push_back(md.name);
-    }
+const wcstring_list_t &input_function_get_names() {
+    // The list and names of input functions are hard-coded and never change
+    static wcstring_list_t result = ([&]() {
+        wcstring_list_t result;
+        result.reserve(input_function_count);
+        for (const auto &md : input_function_metadata) {
+            if (md.name[0]) {
+                result.push_back(md.name);
+            }
+        }
+        return result;
+    })();
+
     return result;
 }
 
 maybe_t<readline_cmd_t> input_function_get_code(const wcstring &name) {
-    for (const auto &md : input_function_metadata) {
-        if (name == md.name) {
-            return md.code;
-        }
+    // `input_function_metadata` is required to be kept in asciibetical order, making it OK to do
+    // a binary search for the matching name.
+    constexpr auto end = &input_function_metadata[0] + input_function_count;
+    auto result = std::lower_bound(
+        &input_function_metadata[0], end,
+        input_function_metadata_t{name.data(), static_cast<readline_cmd_t>(-1)},
+        [&](const input_function_metadata_t &lhs, const input_function_metadata_t &rhs) {
+            return wcscmp(lhs.name, rhs.name) < 0;
+        });
+
+    if (result != end && result->name[0] && name == result->name) {
+        return result->code;
     }
     return none();
 }

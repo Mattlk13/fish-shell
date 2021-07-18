@@ -1,7 +1,12 @@
-@import url("default.css");
+@import url("classic.css");
+
+:root {
+  color-scheme: light dark; /* both supported */
+}
 
 html {
     background: none;
+    min-height: 100%;
 }
 
 body {
@@ -10,15 +15,15 @@ body {
 
 div#fmain {
     color: #222;
-    padding: 10px 50px 30px;
+    padding: 10px 40px 10px;
     background-color: #EEEEFA;
     border-radius: 14px;
     position: relative;
-    margin: 15px auto 0;
-    -moz-box-shadow: 0 0 1px 1px #333;
-    -webkit-box-shadow: 0 0 1px 1px #333;
+    margin: 15px auto 15px;
     box-shadow: 0 0 5px 1px #333;
     width: 85%;
+    /* This is super-cheesy, but 1270px is the maximum width of the sidebar, the content and the margins */
+    max-width: 1270px;
 }
 
 div.related {
@@ -26,9 +31,24 @@ div.related {
     padding: 0.5em 0;
     border-top: 1px solid #ccc;
     margin-top: 0;
+    background-color: inherit;
 }
 
-div.related a:hover {
+div.section {
+    /* Make scrollable when it's too wide
+       Really only happens with tables, the rest flows nicely,
+       but I have no idea how to make the tables themselves scrollable
+     */
+    overflow-y: auto;
+    /* This avoids leaving the actual text narrower than necessary
+       in certain widths.
+     */
+    width: 100%;
+}
+
+div.related a:hover,
+div.footer a:hover,
+div.sphinxsidebar a:hover {
     color: #0095C4;
 }
 
@@ -48,30 +68,50 @@ form.inline-search input[type="submit"] {
 }
 
 div.sphinxsidebar {
-    background-color: #eeeefa;
-    border: 1px solid;
-    border-radius: 5px;
-    line-height: 130%;
+    border-right: 1px solid #ccc;
+    border-radius: 0px;
+    line-height: 150%;
     font-size: smaller;
-    overflow: auto;
-    position: absolute;
     margin-left: 0;
+    float: left;
+    /* Let this move along with the screen, but be scrollable itself.
+    This means the user can't scroll *away* from the sidebar - it's always available */
+    overflow: auto;
+    position: sticky;
+    top: 0;
+    max-height: 100vh;
+    /* Default scrollbar is too thicc */
+    scrollbar-width: thin;
+}
+
+div.sphinxsidebar::-webkit-scrollbar {
+  width: 5px;
+}
+
+div.sphinxsidebar::-webkit-scrollbar-thumb {
+  /* Without, chrome lets the scrollbar disappear? */
+  background-color: grey;
+  border-radius: 10px;
+}
+
+div.documentwrapper {
     float: none;
 }
 
-/* On screens that are less than 700px wide remove the sidebar */
-@media screen and (max-width: 700px) {
-  div.sphinxsidebar {
-    width: 100%;
-    height: auto;
-    position: relative;
-  }
-  div.content {margin-left: 0;}
-  div.bodywrapper { margin: 0; }
+div.document, div.body {
+    background-color: inherit;
+    color: inherit;
+}
+
+div#searchbox {
+    /* Cheesy: The padding is on the sphinxsidebar*wrapper*,
+       so if this is the last element the bottom padding won't apply.
+     */
+    padding-bottom: 5px;
 }
 
 div.sphinxsidebar h3, div.sphinxsidebar h4 {
-    margin-top: 1.5em;
+    margin-top: 1em;
 }
 
 div.sphinxsidebarwrapper > h3:first-child {
@@ -82,8 +122,8 @@ div.sphinxsidebarwrapper > ul > li > ul > li {
     margin-bottom: 0.4em;
 }
 
-div.sphinxsidebar a:hover {
-    color: #0095C4;
+ul li.toctree-l1 {
+    line-height: 150%;
 }
 
 form.inline-search input,
@@ -99,7 +139,7 @@ div.sphinxsidebar input[type=text] {
 }
 
 div.body {
-    padding: 0 0 0 1.2em;
+    padding: 10px 0 0 1.2em;
     min-width: 150px;
 }
 
@@ -150,9 +190,13 @@ div.body a:hover {
 
 tt, code, pre {
     font-family: monospace, sans-serif;
-    font-size: 96.5%;
-    /* Older sphinx versions set a color here, we need to unset it so we inherit from the outer div.highlight */
-    background-color: unset;
+    /* Older sphinx versions set a color here, we need to inherit it from the outer div.highlight */
+    background-color: inherit;
+}
+
+pre, div[class*="highlight-"] {
+    /* For some reason sphinx since 3.1.2 sets "clear: both" here, which breaks in interesting ways */
+    clear: unset;
 }
 
 div.body tt, div.body code {
@@ -173,6 +217,9 @@ table.docutils {
     border-radius: 3px;
     margin-top: 10px;
     margin-bottom: 10px;
+    /* Make table scrollable on overflow */
+    display: block;
+    overflow: auto;
 }
 
 table.docutils td, table.docutils th {
@@ -206,10 +253,6 @@ div.footer {
     margin-right: 10px;
 }
 
-div.footer a:hover {
-    color: #0095C4;
-}
-
 .refcount {
     color: #060;
 }
@@ -219,9 +262,176 @@ div.footer a:hover {
 }
 
 .highlight {
-    background: #FFF !important;
+    background: #FFF;
 }
 
 dl > dt span ~ em {
     font-family: monospace, sans-serif;
+}
+
+/* On screens that are less than 700px wide remove anything non-essential
+   - the sidebar, the gradient background, ... */
+@media screen and (max-width: 700px) {
+    div.sphinxsidebar {
+        font-size: 16px;
+        width: 100%;
+        height: auto;
+        position: relative;
+    }
+    div.documentwrapper {
+        float: left;
+    }
+
+    div.sphinxsidebar ul {
+        flex-basis: content;
+        flex-wrap: wrap;
+    }
+    div.sphinxsidebarwrapper {
+        display: flex;
+    }
+    div.sphinxsidebarwrapper > h3:nth-child(5) {
+        display: none;
+    }
+    div#searchbox {
+        display: none !important;
+    }
+    div.content {margin-left: 0;}
+
+    div.bodywrapper {
+        margin: 0;
+    }
+    div.body {
+        padding: 1rem;
+    }
+
+    div#fmain {
+        border-radius: 0px;
+        margin: 0;
+        box-shadow: 0;
+        width: 100%;
+        padding: 0;
+        /* We have some padding/margins that would overflow - just remove it */
+        overflow: clip;
+    }
+    div.footer {
+        margin: 0;
+    }
+}
+
+.sphinxsidebar ul.current > li.current { font-weight: bold }
+
+.gray { color: #777 }
+.purple { color: #551a8b; font-weight: bold; }
+.red { color: #FF0000; }
+
+/* Color based on the Name.Function (.nf) class from pygments.css. */
+.command { color: #005fd7 }
+
+/* Color based on the Name.Constant (.no) class from pygments.css. */
+.param { color: #00bfff }
+
+/* Color based on the Name.Constant (.no) class from pygments.css. */
+/* Used for underlining file paths in interactive code examples. */
+.param-valid-path { color: #00afff; text-decoration: underline }
+
+/* Color based on the Generic.Prompt (.gp) class from pygments.css. */
+.prompt { color: #8f7902 }
+
+kbd {
+  background-color: #f9f9f9;
+  border: 1px solid #aaa;
+  border-radius: .2em;
+  box-shadow: 0.1em 0.1em 0.2em rgba(0,0,0,0.1);
+  color: #000;
+  padding: 0.1em 0.3em;
+}
+
+.footnote, .footnote-reference {
+    background-color: #ddddea;
+    font-size: 90%;
+}
+
+@media (prefers-color-scheme: dark) {
+    body {
+        background: linear-gradient(to top, #1f1f3f 0%,#051f3a 100%);
+    }
+    div#fmain {
+        color: #DDD;
+        background-color: #202028;
+        box-shadow: 0 0 5px 1px #000;
+    }
+
+    div.body h1, div.body h2, div.body h3, div.body h4, div.body h5, div.body h6 {
+        background-color: inherit;
+        color: inherit;
+    }
+
+    .footnote, .footnote-reference {
+        background-color: #101020;
+    }
+
+    div.sphinxsidebar {
+        border-right: 1px solid #666;
+    }
+
+    div.related:first-child {
+        border-bottom: 1px solid #666;
+    }
+
+    div.related {
+        border-top: 1px solid #666;
+    }
+
+    div.sphinxsidebar a, div.footer {
+        color: #CCC;
+    }
+
+    div.sphinxsidebar h3 a, div.related a, div.sphinxsidebar h3 {
+        color: #BBB;
+    }
+    .highlight {
+        background: #000;
+    }
+    kbd {
+        background-color: #111;
+        border: 1px solid #444;
+        box-shadow: 0.1em 0.1em 0.2em rgba(100,100,100,0.1);
+        color: #FFF;
+    }
+    table.docutils th {
+        background-color: #222;
+    }
+
+    table.docutils td {
+        background-color: #111;
+    }
+    input {
+        background-color: #222;
+        color: #BBB;
+    }
+
+    dt:target, span.highlighted {
+        background-color: #404060;
+    }
+    table.docutils {
+        border: 1px solid #222;
+    }
+
+    table.docutils td, table.docutils th {
+        border: 1px solid #222 !important;
+    }
+    div.body a {
+        color: #2092fa;
+    }
+    div.footer a {
+        color: #BBB;
+    }
+    
+    /* Color based on the Name.Function (.nf) class from pygments.css. */
+    .command { color: #008fd7 }
+
+    /* The table background on fishfish Beta r1 */
+    th, dl.field-list > dt {
+        background-color: #121;
+    }
 }

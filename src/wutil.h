@@ -19,26 +19,7 @@
 #include "common.h"
 #include "maybe.h"
 
-/// Sets CLO_EXEC on a given fd according to the value of \p should_set.
-int set_cloexec(int fd, bool should_set = true);
-
-/// Wide character version of open() that also sets the close-on-exec flag (atomically when
-/// possible).
-int wopen_cloexec(const wcstring &pathname, int flags, mode_t mode = 0);
-
-/// Narrow versions of wopen_cloexec.
-int open_cloexec(const std::string &path, int flags, mode_t mode = 0);
-int open_cloexec(const char *path, int flags, mode_t mode = 0);
-
-/// Mark an fd as nonblocking; returns errno or 0 on success.
-int make_fd_nonblocking(int fd);
-
-/// Mark an fd as blocking; returns errno or 0 on success.
-int make_fd_blocking(int fd);
-
-/// Check if an fd is on a remote filesystem (NFS, SMB, CFS)
-/// Return 1 if remote, 0 if local, -1 on error or if not implemented on this platform.
-int fd_check_is_remote(int fd);
+class autoclose_fd_t;
 
 /// Wide character version of opendir(). Note that opendir() is guaranteed to set close-on-exec by
 /// POSIX (hooray).
@@ -96,10 +77,10 @@ bool wreaddir_resolving(DIR *dir, const std::wstring &dir_path, wcstring &out_na
 bool wreaddir_for_dirs(DIR *dir, wcstring *out_name);
 
 /// Wide character version of dirname().
-std::wstring wdirname(const std::wstring &path);
+std::wstring wdirname(std::wstring path);
 
 /// Wide character version of basename().
-std::wstring wbasename(const std::wstring &path);
+std::wstring wbasename(std::wstring path);
 
 /// Wide character wrapper around the gettext function. For historic reasons, unlike the real
 /// gettext function, wgettext takes care of setting the correct domain, etc. using the textdomain
@@ -158,13 +139,15 @@ double fish_wcstod(const wchar_t *str, wchar_t **endptr);
 /// seems to aggressively re-use inodes, so it cannot determine if a file has been deleted (ABA
 /// problem). Therefore we include richer information.
 struct file_id_t {
-    dev_t device;
-    ino_t inode;
-    uint64_t size;
-    time_t change_seconds;
-    long change_nanoseconds;
-    time_t mod_seconds;
-    long mod_nanoseconds;
+    dev_t device{static_cast<dev_t>(-1LL)};
+    ino_t inode{static_cast<ino_t>(-1LL)};
+    uint64_t size{static_cast<uint64_t>(-1LL)};
+    time_t change_seconds{-1};
+    long change_nanoseconds{-1};
+    time_t mod_seconds{-1};
+    long mod_nanoseconds{-1};
+
+    constexpr file_id_t() = default;
 
     bool operator==(const file_id_t &rhs) const;
     bool operator!=(const file_id_t &rhs) const;
@@ -173,6 +156,8 @@ struct file_id_t {
     bool operator<(const file_id_t &rhs) const;
 
     static file_id_t from_stat(const struct stat &buf);
+
+    wcstring dump() const;
 
    private:
     int compare_file_id(const file_id_t &rhs) const;
@@ -203,6 +188,7 @@ struct hash<file_id_t> {
 #endif
 
 file_id_t file_id_for_fd(int fd);
+file_id_t file_id_for_fd(const autoclose_fd_t &fd);
 file_id_t file_id_for_path(const wcstring &path);
 file_id_t file_id_for_path(const std::string &path);
 

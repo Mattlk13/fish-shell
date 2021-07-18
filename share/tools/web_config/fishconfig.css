@@ -1,15 +1,17 @@
 body {
     background: linear-gradient(to bottom, #a7cfdf 0%, #23538a 100%);
-    font-family: "Source Code Pro", "DejaVu Sans Mono", Menlo, "Ubuntu Mono", Consolas, Monaco,
-        "Lucida Console", monospace, fixed;
+    font-family: monospace, fixed;
     color: #222;
-    min-height: 100vh; /* at least 1 screen high - to prevent the gradient from running out on a short tab */
+}
+
+#ancestor {
     width: 90%;
     margin-left: auto;
     margin-right: auto;
     -moz-box-shadow: 0 0 1px 1px #333;
     -webkit-box-shadow: 0 0 1px 1px #333;
     box-shadow: 0 0 5px 1px #333;
+    border-radius: 8px;
 }
 
 code {
@@ -17,14 +19,6 @@ code {
         "Lucida Console", monospace, fixed;
 }
 
-@media screen and (max-width: 700px) {
-    /* On small screens remove the margins to leave more for the actual content */
-    body {
-        width: 100%;
-        margin-left: none;
-        margin-right: none;
-    }
-}
 #parent {
     width: 100%;
     min-height: 480px;
@@ -42,6 +36,7 @@ code {
     display: table-cell;
     border: 1px solid #ccc;
     border-right: none;
+    border-top: none;
     padding-bottom: 15px;
     padding-top: 15px;
     padding-left: 3px;
@@ -52,25 +47,24 @@ code {
     cursor: pointer;
 }
 
+.tab:hover,
+#tab_contents .master_element:hover,
+.color_scheme_choice_container:hover,
+.prompt_choices_list > .ng-scope:hover
+{
+    background-color: #DDE;
+}
+
 #tab_parent :first-child {
     border-top-left-radius: 8px;
+    border-left: none;
 }
 
 #tab_parent :last-child {
     border-top-right-radius: 8px;
 }
 
-.tab_first {
-    border-top-left-radius: 5px;
-    border-bottom-left-radius: 5px;
-}
-
-.tab_last {
-    border-top-right-radius: 5px;
-    border-bottom-right-radius: 5px;
-}
-
-.selected_tab {
+.selected_tab, .selected_tab:hover {
     background-color: #eeeefa;
     border-bottom: none;
 }
@@ -79,11 +73,19 @@ code {
     padding-top: 20px;
     padding-bottom: 20px;
     width: 100%;
-    min-height: 80vh;
+    min-height: 90vh;
     background-color: #eeeefa;
     border-bottom-left-radius: 8px;
     border-bottom-right-radius: 8px;
     margin-bottom: 20px;
+    position: relative;
+    box-sizing: border-box;
+}
+
+/* This may be placed directly inside a tab, to prevent its contents from growing vertically. */
+.height_limiter {
+    display: flex;
+    flex-direction: column;
 }
 
 .footer {
@@ -438,7 +440,10 @@ code {
 .prompt_choices_scrollview {
     padding-top: 5px;
     overflow-y: scroll;
-    max-height: 70vh; /* fill out roughly the rest of the screen once scrolled to the preview */
+}
+
+.prompt_choices_scrollview {
+    position: relative;
 }
 
 .color_scheme_choices_list,
@@ -448,9 +453,14 @@ code {
     bottom: 0px;
 }
 
+.color_scheme_choices_list {
+    display: flex;
+    flex-wrap: wrap;
+}
+
 .color_scheme_choice_container {
-    float: left;
     padding: 5px;
+    flex-grow: 1;
 }
 
 .fake_cursor {
@@ -493,7 +503,7 @@ img.delete_icon {
 .current_prompt {
     background-color: #000;
     font-size: 12pt;
-    padding: 25px;
+    padding: 10px;
     margin: 5px 5px 25px 5px; /* top right bottom left */
     cursor: pointer;
     line-height: 1.8em;
@@ -535,7 +545,7 @@ img.delete_icon {
 .save_button:hover,
 .customize_theme_button:hover,
 .generic_button:hover {
-    border-color: rgba(71, 71, 71, 0.9);
+    border-color: rgba(171, 171, 171, 0.9);
 }
 
 .button_highlight {
@@ -614,4 +624,62 @@ img.delete_icon {
     color: #bbb;
     background-color: transparent;
     cursor: default;
+}
+
+@media screen and (max-width: 800px) {
+    /* On small screens remove the margins to leave more for the actual content */
+    body {
+        width: 100%;
+        margin: 0 0 0 0;
+    }
+
+    #ancestor {
+        width: 100%;
+    }
+
+    #parent {
+        margin-top: 0;
+    }
+    #tab_contents {
+        margin-bottom: 0;
+    }
+}
+
+@media (prefers-color-scheme: dark) {
+    body {
+        background: linear-gradient(to top, #1f1f3f 0%,#051f3a 100%);
+        color: #DDD;
+    }
+
+    div#ancestor {
+        box-shadow: 0 0 5px 1px #000;
+    }
+    .tab {
+        background-color: black;
+        border: 1px solid #222;
+        border-top: none;
+    }
+    .tab:hover,
+    #tab_contents .master_element:hover,
+    .color_scheme_choice_container:hover,
+    .prompt_choices_list > .ng-scope:hover
+    {
+        background-color: #223;
+    }
+
+    .selected_tab, .selected_tab:hover {
+        background-color: #202028;
+        border-bottom: none;
+    }
+
+    #tab_contents {
+        background-color: #202028;
+    }
+    .detail, .selected_master_elem {
+        background-color: black;
+    }
+    input {
+        background-color: #222;
+        color: #AAA;
+    }
 }

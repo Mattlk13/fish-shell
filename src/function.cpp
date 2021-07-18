@@ -184,6 +184,7 @@ std::shared_ptr<const function_properties_t> function_get_properties(const wcstr
 
 int function_exists(const wcstring &cmd, parser_t &parser) {
     ASSERT_IS_MAIN_THREAD();
+    if (!valid_func_name(cmd)) return false;
     if (parser_keywords_is_reserved(cmd)) return 0;
     try_autoload(cmd, parser);
     auto funcset = function_set.acquire();
@@ -197,8 +198,9 @@ void function_load(const wcstring &cmd, parser_t &parser) {
     }
 }
 
-int function_exists_no_autoload(const wcstring &cmd) {
-    if (parser_keywords_is_reserved(cmd)) return 0;
+bool function_exists_no_autoload(const wcstring &cmd) {
+    if (!valid_func_name(cmd)) return false;
+    if (parser_keywords_is_reserved(cmd)) return false;
     auto funcset = function_set.acquire();
 
     // Check if we either have the function, or it could be autoloaded.
@@ -383,11 +385,12 @@ wcstring functions_def(const wcstring &name) {
                 append_format(out, L" --on-variable %ls", d.str_param1.c_str());
                 break;
             }
-            case event_type_t::exit: {
-                if (d.param1.pid > 0)
-                    append_format(out, L" --on-process-exit %d", d.param1.pid);
-                else
-                    append_format(out, L" --on-job-exit %d", -d.param1.pid);
+            case event_type_t::process_exit: {
+                append_format(out, L" --on-process-exit %d", d.param1.pid);
+                break;
+            }
+            case event_type_t::job_exit: {
+                append_format(out, L" --on-job-exit %d", d.param1.jobspec.pid);
                 break;
             }
             case event_type_t::caller_exit: {

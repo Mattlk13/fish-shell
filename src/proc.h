@@ -8,7 +8,7 @@
 #include <signal.h>
 #include <stddef.h>
 #include <sys/time.h>  // IWYU pragma: keep
-#include <sys/wait.h>
+#include <sys/wait.h>  // IWYU pragma: keep
 #include <unistd.h>
 
 #include <deque>
@@ -21,6 +21,7 @@
 #include "io.h"
 #include "parse_tree.h"
 #include "topic_monitor.h"
+#include "wait_handle.h"
 
 /// Types of processes.
 enum class process_type_t {
@@ -81,6 +82,8 @@ class proc_status_t {
         // Some paranoia.
         constexpr int zerocode = w_exitcode(0, 0);
         static_assert(WIFEXITED(zerocode), "Synthetic exit status not reported as exited");
+
+        assert(ret < 256);
         return proc_status_t(w_exitcode(ret, 0 /* sig */));
     }
 
@@ -196,15 +199,6 @@ enum { INVALID_PID = -2 };
 /// the name of the shellscript function.
 class parser_t;
 class process_t {
-   private:
-    null_terminated_array_t<wchar_t> argv_array;
-
-    redirection_spec_list_t proc_redirection_specs;
-
-    // No copying.
-    process_t(const process_t &rhs) = delete;
-    void operator=(const process_t &rhs) = delete;
-
    public:
     process_t();
 
@@ -228,30 +222,19 @@ class process_t {
     std::vector<concrete_assignment> variable_assignments;
 
     /// Sets argv.
-    void set_argv(const wcstring_list_t &argv) { argv_array.set(argv); }
+    void set_argv(wcstring_list_t argv) { argv_ = std::move(argv); }
 
     /// Returns argv.
-    wchar_t **get_argv() { return argv_array.get(); }
-    const wchar_t *const *get_argv() const { return argv_array.get(); }
-    const null_terminated_array_t<wchar_t> &get_argv_array() const { return argv_array; }
+    const wcstring_list_t &argv() { return argv_; }
 
-    /// Returns argv[idx].
-    const wchar_t *argv(size_t idx) const {
-        const wchar_t *const *argv = argv_array.get();
-        assert(argv != nullptr);
-        return argv[idx];
-    }
-
-    /// Returns argv[0], or NULL.
-    const wchar_t *argv0() const {
-        const wchar_t *const *argv = argv_array.get();
-        return argv ? argv[0] : nullptr;
-    }
+    /// Returns argv[0], or nullptr.
+    const wchar_t *argv0() const { return argv_.empty() ? nullptr : argv_.front().c_str(); }
 
     /// Redirection list getter and setter.
-    const redirection_spec_list_t &redirection_specs() const { return proc_redirection_specs; }
+    const redirection_spec_list_t &redirection_specs() const { return proc_redirection_specs_; }
+
     void set_redirection_specs(redirection_spec_list_t specs) {
-        this->proc_redirection_specs = std::move(specs);
+        this->proc_redirection_specs_ = std::move(specs);
     }
 
     /// Store the current topic generations. That is, right before the process is launched, record
@@ -265,6 +248,10 @@ class process_t {
 
     /// \return whether this process type is internal (block, function, or builtin).
     bool is_internal() const;
+
+    /// \return the wait handle for the process, creating it if \p create is set.
+    /// This will return nullptr if the process does not have a pid (i.e. is not external).
+    wait_handle_ref_t get_wait_handle(bool create = true);
 
     /// Actual command to pass to exec in case of process_type_t::external or process_type_t::exec.
     wcstring actual_cmd;
@@ -295,17 +282,21 @@ class process_t {
 
     /// Number of jiffies spent in process at last cpu time check.
     unsigned long last_jiffies{0};
+
+    // No copying.
+    process_t(const process_t &rhs) = delete;
+    void operator=(const process_t &rhs) = delete;
+
+   private:
+    wcstring_list_t argv_;
+    redirection_spec_list_t proc_redirection_specs_;
+
+    // The wait handle. This is constructed lazily, and cached.
+    wait_handle_ref_t wait_handle_{};
 };
 
-typedef std::unique_ptr<process_t> process_ptr_t;
-typedef std::vector<process_ptr_t> process_list_t;
-
-/// A user-visible job ID.
-using job_id_t = int;
-
-/// The non user-visible, never-recycled job ID.
-/// Every job has a unique positive value for this.
-using internal_job_id_t = uint64_t;
+using process_ptr_t = std::unique_ptr<process_t>;
+using process_list_t = std::vector<process_ptr_t>;
 
 /// A struct representing a job. A job is a pipeline of one or more processes.
 class job_t {
@@ -393,6 +384,11 @@ class job_t {
     /// This may be none if the job consists of just internal fish functions or builtins.
     /// This may also be fish itself.
     maybe_t<pid_t> get_pgid() const;
+
+    /// \return the pid of the last external process in the job.
+    /// This may be none if the job consists of just internal fish functions or builtins.
+    /// This will never be fish's own pid.
+    maybe_t<pid_t> get_last_pid() const;
 
     /// The id of this job.
     /// This is user-visible, is recycled, and may be -1.
@@ -533,9 +529,6 @@ void proc_update_jiffies(parser_t &parser);
 /// job is in the foreground, that every process is in a valid state, etc.
 void proc_sanity_check(const parser_t &parser);
 
-/// Create a process/job exit event notification.
-event_t proc_create_event(const wchar_t *msg, event_type_t type, pid_t pid, int status);
-
 /// Initializations.
 void proc_init();
 
@@ -562,7 +555,7 @@ int terminal_maybe_give_to_job_group(const job_group_t *jg, bool continuing_from
 
 /// Add a job to the list of PIDs/PGIDs we wait on even though they are not associated with any
 /// jobs. Used to avoid zombie processes after disown.
-void add_disowned_job(job_t *j);
+void add_disowned_job(const job_t *j);
 
 bool have_proc_stat();
 

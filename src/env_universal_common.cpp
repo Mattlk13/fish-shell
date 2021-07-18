@@ -115,12 +115,13 @@ static maybe_t<wcstring> default_vars_path_directory() {
     return path;
 }
 
-static maybe_t<wcstring> default_vars_path() {
+/// \return the default variable path, or an empty string on failure.
+static wcstring default_vars_path() {
     if (auto path = default_vars_path_directory()) {
         path->append(L"/fish_variables");
-        return path;
+        return path.acquire();
     }
-    return none();
+    return wcstring{};
 }
 
 /// Test if the message msg contains the command cmd.
@@ -251,9 +252,6 @@ static wcstring encode_serialized(const wcstring_list_t &vals) {
     return join_strings(vals, UVAR_ARRAY_SEP);
 }
 
-env_universal_t::env_universal_t(wcstring path)
-    : narrow_vars_path(wcs2string(path)), explicit_vars_path(std::move(path)) {}
-
 maybe_t<env_var_t> env_universal_t::get(const wcstring &name) const {
     auto where = vars.find(name);
     if (where != vars.end()) return where->second;
@@ -268,8 +266,7 @@ maybe_t<env_var_t::env_var_flags_t> env_universal_t::get_flags(const wcstring &n
     return none();
 }
 
-void env_universal_t::set_internal(const wcstring &key, const env_var_t &var) {
-    ASSERT_IS_LOCKED(lock);
+void env_universal_t::set(const wcstring &key, const env_var_t &var) {
     bool new_entry = vars.count(key) == 0;
     env_var_t &entry = vars[key];
     if (new_entry || entry != var) {
@@ -279,13 +276,7 @@ void env_universal_t::set_internal(const wcstring &key, const env_var_t &var) {
     }
 }
 
-void env_universal_t::set(const wcstring &key, const env_var_t &var) {
-    scoped_lock locker(lock);
-    this->set_internal(key, var);
-}
-
-bool env_universal_t::remove_internal(const wcstring &key) {
-    ASSERT_IS_LOCKED(lock);
+bool env_universal_t::remove(const wcstring &key) {
     auto iter = this->vars.find(key);
     if (iter != this->vars.end()) {
         if (iter->second.exports()) export_generation += 1;
@@ -296,14 +287,8 @@ bool env_universal_t::remove_internal(const wcstring &key) {
     return false;
 }
 
-bool env_universal_t::remove(const wcstring &key) {
-    scoped_lock locker(lock);
-    return this->remove_internal(key);
-}
-
 wcstring_list_t env_universal_t::get_names(bool show_exported, bool show_unexported) const {
     wcstring_list_t result;
-    scoped_lock locker(lock);
     for (const auto &kv : vars) {
         const wcstring &key = kv.first;
         const env_var_t &var = kv.second;
@@ -359,7 +344,7 @@ void env_universal_t::generate_callbacks_and_update_exports(const var_table_t &n
     }
 }
 
-void env_universal_t::acquire_variables(var_table_t &vars_to_acquire) {
+void env_universal_t::acquire_variables(var_table_t &&vars_to_acquire) {
     // Copy modified values from existing vars to vars_to_acquire.
     for (const auto &key : this->modified) {
         auto src_iter = this->vars.find(key);
@@ -380,7 +365,6 @@ void env_universal_t::acquire_variables(var_table_t &vars_to_acquire) {
 }
 
 void env_universal_t::load_from_fd(int fd, callback_data_list_t &callbacks) {
-    ASSERT_IS_LOCKED(lock);
     assert(fd >= 0);
     // Get the dev / inode.
     const file_id_t current_file = file_id_for_fd(fd);
@@ -401,13 +385,12 @@ void env_universal_t::load_from_fd(int fd, callback_data_list_t &callbacks) {
         this->generate_callbacks_and_update_exports(new_vars, callbacks);
 
         // Acquire the new variables.
-        this->acquire_variables(new_vars);
+        this->acquire_variables(std::move(new_vars));
         last_read_file = current_file;
     }
 }
 
-bool env_universal_t::load_from_path(const std::string &path, callback_data_list_t &callbacks) {
-    ASSERT_IS_LOCKED(lock);
+bool env_universal_t::load_from_path(const wcstring &path, callback_data_list_t &callbacks) {
 
     // Check to see if the file is unchanged. We do this again in load_from_fd, but this avoids
     // opening the file unnecessarily.
@@ -417,23 +400,13 @@ bool env_universal_t::load_from_path(const std::string &path, callback_data_list
     }
 
     bool result = false;
-    autoclose_fd_t fd{open_cloexec(path.c_str(), O_RDONLY)};
+    autoclose_fd_t fd{wopen_cloexec(path, O_RDONLY)};
     if (fd.valid()) {
         FLOGF(uvar_file, L"universal log reading from file");
         this->load_from_fd(fd.fd(), callbacks);
         result = true;
     }
     return result;
-}
-
-bool env_universal_t::load_from_path(const wcstring &path, callback_data_list_t &callbacks) {
-    std::string tmp = wcs2string(path);
-    return load_from_path(tmp, callbacks);
-}
-
-uint64_t env_universal_t::get_export_generation() const {
-    scoped_lock locker(lock);
-    return export_generation;
 }
 
 /// Serialize the contents to a string.
@@ -464,7 +437,6 @@ std::string env_universal_t::serialize_with_vars(const var_table_t &vars) {
 
 /// Writes our state to the fd. path is provided only for error reporting.
 bool env_universal_t::write_to_fd(int fd, const wcstring &path) {
-    ASSERT_IS_LOCKED(lock);
     assert(fd >= 0);
     bool success = true;
     std::string contents = serialize_with_vars(vars);
@@ -492,18 +464,18 @@ bool env_universal_t::move_new_vars_file_into_place(const wcstring &src, const w
     return ret == 0;
 }
 
-bool env_universal_t::initialize(callback_data_list_t &callbacks) {
-    scoped_lock locker(lock);
-    if (!explicit_vars_path.empty()) {
-        return load_from_path(narrow_vars_path, callbacks);
+void env_universal_t::initialize_at_path(callback_data_list_t &callbacks, wcstring path,
+                                         bool migrate_legacy) {
+    if (path.empty()) return;
+    assert(!initialized() && "Already initialized");
+    vars_path_ = std::move(path);
+
+    if (load_from_path(vars_path_, callbacks)) {
+        // Successfully loaded from our normal path.
+        return;
     }
 
-    // Get the variables path; if there is none (e.g. HOME is bogus) it's hopeless.
-    auto vars_path = default_vars_path();
-    if (!vars_path) return false;
-
-    bool success = load_from_path(*vars_path, callbacks);
-    if (!success && errno == ENOENT) {
+    if (errno == ENOENT && migrate_legacy) {
         // We failed to load, because the file was not found. Attempt to load from our legacy paths.
         if (auto dir = default_vars_path_directory()) {
             for (const wcstring &path : get_legacy_paths(*dir)) {
@@ -515,18 +487,18 @@ bool env_universal_t::initialize(callback_data_list_t &callbacks) {
                     for (const auto &kv : vars) {
                         modified.insert(kv.first);
                     }
-                    success = true;
                     break;
                 }
             }
         }
     }
-    // If we succeeded, we store the *default path*, not the legacy one.
-    if (success) {
-        explicit_vars_path = *vars_path;
-        narrow_vars_path = wcs2string(*vars_path);
-    }
-    return success;
+}
+
+void env_universal_t::initialize(callback_data_list_t &callbacks) {
+    // Set do_flock to false immediately if the default variable path is on a remote filesystem.
+    // See #7968.
+    if (path_get_config_is_remote() == 1) do_flock = false;
+    this->initialize_at_path(callbacks, default_vars_path(), true /* migrate legacy */);
 }
 
 autoclose_fd_t env_universal_t::open_temporary_file(const wcstring &directory, wcstring *out_path) {
@@ -535,7 +507,7 @@ autoclose_fd_t env_universal_t::open_temporary_file(const wcstring &directory, w
     // This should almost always succeed on the first try.
     assert(!string_suffixes_string(L"/", directory));  //!OCLINT(multiple unary operator)
 
-    int saved_errno;
+    int saved_errno = 0;
     const wcstring tmp_name_template = directory + L"/fishd.tmp.XXXXXX";
     autoclose_fd_t result;
     std::string narrow_str;
@@ -553,9 +525,13 @@ autoclose_fd_t env_universal_t::open_temporary_file(const wcstring &directory, w
     return result;
 }
 
-/// Check how long the operation took and print a message if it took too long.
-/// Returns false if it took too long else true.
-static bool check_duration(double start_time) {
+/// Try locking the file.
+/// \return true on success, false on error.
+static bool flock_uvar_file(int fd) {
+    double start_time = timef();
+    while (flock(fd, LOCK_EX) == -1) {
+        if (errno != EINTR) return false;  // do nothing per issue #2149
+    }
     double duration = timef() - start_time;
     if (duration > 0.25) {
         FLOGF(warning, _(L"Locking the universal var file took too long (%.3f seconds)."),
@@ -565,66 +541,53 @@ static bool check_duration(double start_time) {
     return true;
 }
 
-/// Try locking the file. Return true if we succeeded else false. This is safe in terms of the
-/// fallback function implemented in terms of fcntl: only ever run on the main thread, and protected
-/// by the universal variable lock.
-static bool lock_uvar_file(int fd) {
-    double start_time = timef();
-    while (flock(fd, LOCK_EX) == -1) {
-        if (errno != EINTR) return false;  // do nothing per issue #2149
-    }
-    return check_duration(start_time);
-}
-
-bool env_universal_t::open_and_acquire_lock(const std::string &path, autoclose_fd_t *out_fd) {
+bool env_universal_t::open_and_acquire_lock(const wcstring &path, autoclose_fd_t *out_fd) {
     // Attempt to open the file for reading at the given path, atomically acquiring a lock. On BSD,
     // we can use O_EXLOCK. On Linux, we open the file, take a lock, and then compare fstat() to
     // stat(); if they match, it means that the file was not replaced before we acquired the lock.
     //
     // We pass O_RDONLY with O_CREAT; this creates a potentially empty file. We do this so that we
     // have something to lock on.
-    static std::atomic<bool> do_locking(true);
-    bool needs_lock = true;
+    bool locked_by_open = false;
     int flags = O_RDWR | O_CREAT;
 
 #ifdef O_EXLOCK
-    if (do_locking) {
+    if (do_flock) {
         flags |= O_EXLOCK;
-        needs_lock = false;
+        locked_by_open = true;
     }
 #endif
 
     autoclose_fd_t fd{};
     while (!fd.valid()) {
-        double start_time = timef();
-        fd = autoclose_fd_t{open_cloexec(path, flags, 0644)};
+        fd = autoclose_fd_t{wopen_cloexec(path, flags, 0644)};
+
         if (!fd.valid()) {
-            if (errno == EINTR) continue;  // signaled; try again
+            int err = errno;
+            if (err == EINTR) continue;  // signaled; try again
+
 #ifdef O_EXLOCK
-            if (do_locking && (errno == ENOTSUP || errno == EOPNOTSUPP)) {
-                // Filesystem probably does not support locking. Clear the flag and try again. Note
-                // that we try taking the lock via flock anyways. Note that on Linux the two errno
-                // symbols have the same value but on BSD they're different.
+            if ((flags & O_EXLOCK) && (err == ENOTSUP || err == EOPNOTSUPP)) {
+                // Filesystem probably does not support locking. Give up on locking.
+                // Note that on Linux the two errno symbols have the same value but on BSD they're
+                // different.
                 flags &= ~O_EXLOCK;
-                needs_lock = true;
+                do_flock = false;
+                locked_by_open = false;
                 continue;
             }
 #endif
-            const char *error = std::strerror(errno);
             FLOGF(error, _(L"Unable to open universal variable file '%s': %s"), path.c_str(),
-                  error);
+                  std::strerror(err));
             break;
         }
 
         assert(fd.valid() && "Should have a valid fd here");
-        if (!needs_lock && do_locking) {
-            do_locking = check_duration(start_time);
-        }
 
-        // Try taking the lock, if necessary. If we failed, we may be on lockless NFS, etc.; in that
-        // case we pretend we succeeded. See the comment in save_to_path for the rationale.
-        if (needs_lock && do_locking) {
-            do_locking = lock_uvar_file(fd.fd());
+        // Lock if we want to lock and open() didn't do it for us.
+        // If flock fails, give up on locking forever.
+        if (do_flock && !locked_by_open) {
+            if (!flock_uvar_file(fd.fd())) do_flock = false;
         }
 
         // Hopefully we got the lock. However, it's possible the file changed out from under us
@@ -642,8 +605,9 @@ bool env_universal_t::open_and_acquire_lock(const std::string &path, autoclose_f
 // Returns true if modified variables were written, false if not. (There may still be variable
 // changes due to other processes on a false return).
 bool env_universal_t::sync(callback_data_list_t &callbacks) {
+    if (!initialized()) return false;
+
     FLOGF(uvar_file, L"universal log sync");
-    scoped_lock locker(lock);
     // Our saving strategy:
     //
     // 1. Open the file, producing an fd.
@@ -673,49 +637,33 @@ bool env_universal_t::sync(callback_data_list_t &callbacks) {
     // instances of fish will not be able to obtain it. This seems to be a greater risk than that of
     // data loss on lockless NFS. Users who put their home directory on lockless NFS are playing
     // with fire anyways.
-    if (explicit_vars_path.empty()) {
-        // Initialize the vars path from the default one.
-        // In some cases we don't "initialize()" before, so we're doing that now.
-        // This should only happen once.
-        // FIXME: Why don't we initialize()?
-        auto def_vars_path = default_vars_path();
-        if (!def_vars_path) {
-            FLOG(uvar_file, L"No universal variable path available");
-            return false;
-        }
-        explicit_vars_path = *def_vars_path;
-        narrow_vars_path = wcs2string(explicit_vars_path);
-    }
-
     // If we have no changes, just load.
     if (modified.empty()) {
-        this->load_from_path(narrow_vars_path, callbacks);
+        this->load_from_path(vars_path_, callbacks);
         FLOGF(uvar_file, L"universal log no modifications");
         return false;
     }
 
-    const wcstring directory = wdirname(explicit_vars_path);
-    bool success = true;
+    const wcstring directory = wdirname(vars_path_);
     autoclose_fd_t vars_fd{};
 
     FLOGF(uvar_file, L"universal log performing full sync");
 
     // Open the file.
-    if (success) {
-        success = this->open_and_acquire_lock(narrow_vars_path, &vars_fd);
-        if (!success) FLOGF(uvar_file, L"universal log open_and_acquire_lock() failed");
+    if (!this->open_and_acquire_lock(vars_path_, &vars_fd)) {
+        FLOGF(uvar_file, L"universal log open_and_acquire_lock() failed");
+        return false;
     }
 
     // Read from it.
-    if (success) {
-        assert(vars_fd.valid());
-        this->load_from_fd(vars_fd.fd(), callbacks);
-    }
+    assert(vars_fd.valid());
+    this->load_from_fd(vars_fd.fd(), callbacks);
 
-    if (success && ok_to_save) {
-        success = this->save(directory, explicit_vars_path);
+    if (ok_to_save) {
+        return this->save(directory, vars_path_);
+    } else {
+        return true;
     }
-    return success;
 }
 
 // Write our file contents.
@@ -739,9 +687,16 @@ bool env_universal_t::save(const wcstring &directory, const wcstring &vars_path)
     }
 
     if (success) {
+        wcstring real_path;
+        if (auto maybe_real_path = wrealpath(vars_path)) {
+            real_path = *maybe_real_path;
+        } else {
+            real_path = vars_path;
+        }
+
         // Ensure we maintain ownership and permissions (#2176).
         struct stat sbuf;
-        if (wstat(vars_path, &sbuf) >= 0) {
+        if (wstat(real_path, &sbuf) >= 0) {
             if (fchown(private_fd.fd(), sbuf.st_uid, sbuf.st_gid) == -1)
                 FLOGF(uvar_file, L"universal log fchown() failed");
             if (fchmod(private_fd.fd(), sbuf.st_mode) == -1)
@@ -765,7 +720,7 @@ bool env_universal_t::save(const wcstring &directory, const wcstring &vars_path)
 #endif
 
         // Apply new file.
-        success = this->move_new_vars_file_into_place(private_file_path, vars_path);
+        success = this->move_new_vars_file_into_place(private_file_path, real_path);
         if (!success) FLOGF(uvar_file, L"universal log move_new_vars_file_into_place() failed");
     }
 
@@ -1132,12 +1087,14 @@ class universal_notifier_shmem_poller_t final : public universal_notifier_t {
             do {
                 seed++;
             } while (seed == 0);
-            last_seed = seed;
 
             // Write out our data.
             region->magic = htonl(SHMEM_MAGIC_NUMBER);       //!OCLINT(constant cond op)
             region->version = htonl(SHMEM_VERSION_CURRENT);  //!OCLINT(constant cond op)
             region->universal_variable_seed = htonl(seed);   //!OCLINT(constant cond op)
+
+            FLOGF(uvar_notifier, "posting notification: seed %u -> %u", last_seed, seed);
+            last_seed = seed;
         }
     }
 
@@ -1158,6 +1115,7 @@ class universal_notifier_shmem_poller_t final : public universal_notifier_t {
             uint32_t seed = ntohl(region->universal_variable_seed);  //!OCLINT(constant cond op)
             if (seed != last_seed) {
                 result = true;
+                FLOGF(uvar_notifier, "polled true: shmem seed change %u -> %u", last_seed, seed);
                 last_seed = seed;
                 last_change_time = get_time();
             }
@@ -1245,10 +1203,12 @@ class universal_notifier_notifyd_t final : public universal_notifier_t {
             amt_read = read(notify_fd, buff, sizeof buff);
             read_something = (read_something || amt_read > 0);
         } while (amt_read == sizeof buff);
+        FLOGF(uvar_notifier, "notify fd %s readable", read_something ? "was" : "was not");
         return read_something;
     }
 
     void post_notification() override {
+        FLOG(uvar_notifier, "posting notification");
         uint32_t status = notify_post(name.c_str());
         if (status != NOTIFY_STATUS_OK) {
             FLOGF(warning,
@@ -1299,129 +1259,48 @@ static autoclose_fd_t make_fifo(const wchar_t *test_path, const wchar_t *suffix)
     return res;
 }
 
-// A universal notifier which uses SIGIO with a named pipe. This relies on the following behavior
-// which appears to work on Linux: if data becomes available on the pipe then all processes get
-// SIGIO even if the data is read (i.e. there is no race between SIGIO and another proc reading).
-//
-// A key difference between Linux and Mac is that on Linux SIGIO is only delivered if the pipe was
-// previously empty. That is, two successive writes with no reads will produce two SIGIOs on Mac but
-// only one on Linux.
-//
-// So, to post a notification, write anything to the pipe; if that would block drain the pipe and
-// try again.
-//
-// To receive a notification, watch for SIGIO on the read end, then read out the data to enable
-// SIGIO to be delivered again.
-class universal_notifier_sigio_t final : public universal_notifier_t {
-#ifdef SIGIO
-   public:
-    // Note we use a different suffix from universal_notifier_named_pipe_t to produce different
-    // FIFOs. This is because universal_notifier_named_pipe_t is level triggered while we are edge
-    // triggered. If they shared the same FIFO, then the named_pipe variant would keep firing
-    // forever.
-    explicit universal_notifier_sigio_t(const wchar_t *test_path)
-        : pipe_(try_make_pipe(test_path, L".notify")) {}
-
-    ~universal_notifier_sigio_t() = default;
-
-    void post_notification() override {
-        if (!pipe_.valid()) return;
-
-        // Write a byte to send SIGIO. If the pipe is full, read some and try again.
-        while (!write_1_byte()) {
-            if (errno == EINTR) {
-                continue;
-            } else if (errno == EAGAIN) {
-                // The pipe is full. Try once more.
-                drain_some();
-                write_1_byte();
-                break;
-            } else {
-                break;
-            }
-        }
-    }
-
-    bool poll() override {
-        if (sigio_count_ != signal_get_sigio_count()) {
-            // On Mac, SIGIO is generated on every write to the pipe.
-            // On Linux, it is generated only when the pipe goes from empty to non-empty.
-            // Read from the pipe so that SIGIO may be delivered again.
-            drain_some();
-            // We may have gotten another SIGIO because the pipe just became writable again.
-            // In particular BSD sends SIGIO on read even if there is no data to be read.
-            // Re-fetch the sigio count.
-            sigio_count_ = signal_get_sigio_count();
-            return true;
-        }
-        return false;
-    }
-
-   private:
-    // Construct a pipe for a given fifo path, arranging for SIGIO to be delivered.
-    // \return an invalid fd on failure.
-    static autoclose_fd_t try_make_pipe(const wchar_t *test_path, const wchar_t *suffix) {
-        autoclose_fd_t pipe = make_fifo(test_path, suffix);
-        if (!pipe.valid()) {
-            return autoclose_fd_t{};
-        }
-        // Note that O_ASYNC cannot be passed to open() (see Linux kernel bug #5993).
-        // We have to set it afterwards like so.
-        // Also Linux got support for O_ASYNC on fifos in 2.6 (released 2003).
-        // Do not be noisy if this fails.
-        if (fcntl(pipe.fd(), F_SETFL, O_NONBLOCK | O_ASYNC) == -1) {
-            FLOGF(uvar_file,
-                  _(L"fcntl(F_SETFL) failed, universal variable notifications disabled"));
-            return autoclose_fd_t{};
-        }
-        if (fcntl(pipe.fd(), F_SETOWN, getpid()) == -1) {
-            FLOGF(uvar_file,
-                  _(L"fcntl(F_SETOWN) failed, universal variable notifications disabled"));
-            return autoclose_fd_t{};
-        }
-        return pipe;
-    }
-
-    // Try writing a single byte to our pipe.
-    // \return true on success, false on error, in which case errno will be set.
-    bool write_1_byte() const {
-        assert(pipe_.valid() && "Invalid pipe");
-        char c = 0x42;
-        ssize_t amt = write(pipe_.fd(), &c, sizeof c);
-        return amt > 0;
-    }
-
-    // Read some data off of the pipe, discarding it.
-    void drain_some() const {
-        if (!pipe_.valid()) return;
-        char buff[256];
-        ignore_result(read(pipe_.fd(), buff, sizeof buff));
-    }
-
-    autoclose_fd_t pipe_{};
-    uint32_t sigio_count_{0};
-#else
-   public:
-    [[noreturn]] universal_notifier_sigio_t() {
-        DIE("universal_notifier_sigio_t cannot be used on this system");
-    }
-#endif
-};
-
 // Named-pipe based notifier. All clients open the same named pipe for reading and writing. The
 // pipe's readability status is a trigger to enter polling mode.
 //
 // To post a notification, write some data to the pipe, wait a little while, and then read it back.
 //
 // To receive a notification, watch for the pipe to become readable. When it does, enter a polling
-// mode until the pipe is no longer readable. To guard against the possibility of a shell exiting
-// when there is data remaining in the pipe, if the pipe is kept readable too long, clients will
-// attempt to read data out of it (to render it no longer readable).
+// mode until the pipe is no longer readable, where we poll based on the modification date of the
+// pipe. To guard against the possibility of a shell exiting when there is data remaining in the
+// pipe, if the pipe is kept readable too long, clients will attempt to read data out of it (to
+// render it no longer readable).
 class universal_notifier_named_pipe_t final : public universal_notifier_t {
 #if !defined(__CYGWIN__)
+    // We operate a state machine.
+    enum state_t{
+        // The pipe is not yet readable. There is nothing to do in poll.
+        // If the pipe becomes readable we will enter the polling state.
+        waiting_for_readable,
+
+        // The pipe is readable. In poll, check if the pipe is still readable,
+        // and whether its timestamp has changed.
+        polling_during_readable,
+
+        // We have written to the pipe (so we expect it to be readable).
+        // We may read back from it in poll().
+        waiting_to_drain,
+    };
+
+    // The state we are currently in.
+    state_t state{waiting_for_readable};
+
+    // When we entered that state, in microseconds since epoch.
+    long long state_start_usec{-1};
+
+    // The pipe itself; this is opened read/write.
     autoclose_fd_t pipe_fd;
-    long long readback_time_usec{0};
-    size_t readback_amount{0};
+
+    // The pipe's file ID containing the last modified timestamp.
+    file_id_t pipe_timestamps{};
+
+    // If we are in waiting_to_drain state, how much we have written and therefore are responsible
+    // for draining.
+    size_t drain_amount{0};
 
     // We "flash" the pipe to make it briefly readable, for this many usec.
     static constexpr long long k_flash_duration_usec = 1e5;
@@ -1429,15 +1308,57 @@ class universal_notifier_named_pipe_t final : public universal_notifier_t {
     // If the pipe remains readable for this many usec, we drain it.
     static constexpr long long k_readable_too_long_duration_usec = 5e6;
 
-    bool polling_due_to_readable_fd{false};
-    long long drain_if_still_readable_time_usec{0};
+    /// \return the name of a state.
+    static const char *state_name(state_t s) {
+        switch (s) {
+            case waiting_for_readable:
+                return "waiting";
+            case polling_during_readable:
+                return "polling";
+            case waiting_to_drain:
+                return "draining";
+        }
+        DIE("Unreachable");
+    }
 
-    void drain_excessive_data() const {
+    // Switch to a state (may or may not be new).
+    void set_state(state_t new_state) {
+        FLOGF(uvar_notifier, "changing from %s to %s", state_name(state), state_name(new_state));
+        state = new_state;
+        state_start_usec = get_time();
+    }
+
+    // Called when the pipe has been readable for too long.
+    void drain_excess() const {
         // The pipe seems to have data on it, that won't go away. Read a big chunk out of it. We
         // don't read until it's exhausted, because if someone were to pipe say /dev/null, that
         // would cause us to hang!
+        FLOG(uvar_notifier, "pipe was full, draining it");
         char buff[512];
         ignore_result(read(pipe_fd.fd(), buff, sizeof buff));
+    }
+
+    // Called when we want to read back data we have written, to mark the pipe as non-readable.
+    void drain_written() {
+        while (this->drain_amount > 0) {
+            char buff[64];
+            size_t amt = std::min(this->drain_amount, sizeof buff);
+            ignore_result(read(this->pipe_fd.fd(), buff, amt));
+            this->drain_amount -= amt;
+        }
+    }
+
+    /// Check if the pipe's file ID (aka struct stat) is different from what we have stored.
+    /// If it has changed, it indicates that someone has modified the pipe; update our stored id.
+    /// \return true if changed, false if not.
+    bool update_pipe_timestamps() {
+        if (!pipe_fd.valid()) return false;
+        file_id_t timestamps = file_id_for_fd(pipe_fd.fd());
+        if (timestamps == this->pipe_timestamps) {
+            return false;
+        }
+        this->pipe_timestamps = timestamps;
+        return true;
     }
 
    public:
@@ -1447,116 +1368,119 @@ class universal_notifier_named_pipe_t final : public universal_notifier_t {
     ~universal_notifier_named_pipe_t() override = default;
 
     int notification_fd() const override {
-        if (polling_due_to_readable_fd) {
-            // We are in polling mode because we think our fd is readable. This means that, if we
-            // return it to be select()'d on, we'll be called back immediately. So don't return it.
-            return -1;
+        if (!pipe_fd.valid()) return -1;
+        // If we are waiting for the pipe to be readable, return it for select.
+        // Otherwise we expect it to be readable already; return invalid.
+        switch (state) {
+            case waiting_for_readable:
+                return pipe_fd.fd();
+            case polling_during_readable:
+            case waiting_to_drain:
+                return -1;
         }
-        // We are not in polling mode. Return the fd so it can be watched.
-        return pipe_fd.fd();
+        DIE("unreachable");
     }
 
     bool notification_fd_became_readable(int fd) override {
-        // Our fd is readable. We deliberately do not read anything out of it: if we did, other
-        // sessions may miss the notification. Instead, we go into "polling mode:" we do not
-        // select() on our fd for a while, and sync periodically until the fd is no longer readable.
-        // However, if we are the one who posted the notification, we don't sync (until we clean
-        // up!)
+        assert(fd == pipe_fd.fd() && "Wrong fd");
         UNUSED(fd);
-        bool should_sync = false;
-        if (readback_time_usec == 0) {
-            polling_due_to_readable_fd = true;
-            drain_if_still_readable_time_usec = get_time() + k_readable_too_long_duration_usec;
-            should_sync = true;
+        switch (state) {
+            case waiting_for_readable:
+                // We are now readable.
+                // Grab the timestamp and return true indicating that we received a notification.
+                set_state(polling_during_readable);
+                update_pipe_timestamps();
+                return true;
+
+            case polling_during_readable:
+            case waiting_to_drain:
+                // We did not return an fd to wait on, so should not be called.
+                DIE("should not be called in this state");
         }
-        return should_sync;
+        DIE("unreachable");
     }
 
     void post_notification() override {
         if (!pipe_fd.valid()) return;
         // We need to write some data (any data) to the pipe, then wait for a while, then read
         // it back. Nobody is expected to read it except us.
+        FLOGF(uvar_notifier, "writing to pipe (written %lu)", (unsigned long)drain_amount);
         char c[1] = {'\0'};
         ssize_t amt_written = write(pipe_fd.fd(), c, sizeof c);
         if (amt_written < 0 && (errno == EWOULDBLOCK || errno == EAGAIN)) {
-            // Very unsual: the pipe is full!
-            drain_excessive_data();
+            // Very unsual: the pipe is full! Try to read some and repeat once.
+            drain_excess();
+            amt_written = write(pipe_fd.fd(), c, sizeof c);
+            if (amt_written < 0) {
+                FLOG(uvar_notifier, "pipe could not be drained, skipping notification");
+                return;
+            }
+            FLOG(uvar_notifier, "pipe drained");
         }
-
-        // Now schedule a read for some time in the future.
-        this->readback_time_usec = get_time() + k_flash_duration_usec;
-        this->readback_amount += sizeof c;
+        assert(amt_written >= 0 && "Amount should not be negative");
+        this->drain_amount += amt_written;
+        // We unconditionally set our state to waiting to drain.
+        set_state(waiting_to_drain);
+        update_pipe_timestamps();
     }
 
     unsigned long usec_delay_between_polls() const override {
-        unsigned long readback_delay = ULONG_MAX;
-        if (this->readback_time_usec > 0) {
-            // How long until the readback?
-            long long now = get_time();
-            if (now >= this->readback_time_usec) {
-                // Oops, it already passed! Return something tiny.
-                readback_delay = 1000;
-            } else {
-                readback_delay = static_cast<unsigned long>(this->readback_time_usec - now);
-            }
-        }
+        if (!pipe_fd.valid()) return 0;
+        switch (state) {
+            case waiting_for_readable:
+                // No polling necessary until it becomes readable.
+                return 0;
 
-        unsigned long polling_delay = ULONG_MAX;
-        if (polling_due_to_readable_fd) {
-            // We're in polling mode. Don't return a value less than our polling interval.
-            polling_delay = k_flash_duration_usec;
+            case polling_during_readable:
+            case waiting_to_drain:
+                return k_flash_duration_usec;
         }
-
-        // Now return the smaller of the two values. If we get ULONG_MAX, it means there's no more
-        // need to poll; in that case return 0.
-        unsigned long result = std::min(readback_delay, polling_delay);
-        if (result == ULONG_MAX) {
-            result = 0;
-        }
-        return result;
+        DIE("Unreachable");
     }
 
     bool poll() override {
         if (!pipe_fd.valid()) return false;
+        switch (state) {
+            case waiting_for_readable:
+                // Nothing to do until the fd is readable.
+                return false;
 
-        // Check if we are past the readback time.
-        if (this->readback_time_usec > 0 && get_time() >= this->readback_time_usec) {
-            // Read back what we wrote. We do nothing with the value.
-            while (this->readback_amount > 0) {
-                char buff[64];
-                size_t amt_to_read = std::min(this->readback_amount, sizeof(buff));
-                ignore_result(read(this->pipe_fd.fd(), buff, amt_to_read));
-                this->readback_amount -= amt_to_read;
+            case polling_during_readable: {
+                // If we're no longer readable, go back to wait mode.
+                // Conversely, if we have been readable too long, perhaps some fish died while its
+                // written data was still on the pipe; drain some.
+                if (!select_wrapper_t::poll_fd_readable(pipe_fd.fd())) {
+                    set_state(waiting_for_readable);
+                } else if (get_time() >= state_start_usec + k_readable_too_long_duration_usec) {
+                    drain_excess();
+                }
+                // Sync if the pipe's timestamp is different, meaning someone modified the pipe
+                // since we last saw it.
+                if (update_pipe_timestamps()) {
+                    FLOG(uvar_notifier, "pipe changed, will sync uvars");
+                    return true;
+                }
+                return false;
             }
-            assert(this->readback_amount == 0);
-            this->readback_time_usec = 0;
-        }
 
-        // Check to see if we are doing readability polling.
-        if (!polling_due_to_readable_fd) {
-            return false;
-        }
-
-        // We are polling, so we are definitely going to sync.
-        // See if this is still readable.
-        fd_set fds;
-        FD_ZERO(&fds);
-        FD_SET(pipe_fd.fd(), &fds);
-        struct timeval timeout = {};
-        select(pipe_fd.fd() + 1, &fds, nullptr, nullptr, &timeout);
-        if (!FD_ISSET(pipe_fd.fd(), &fds)) {
-            // No longer readable, no longer polling.
-            polling_due_to_readable_fd = false;
-            drain_if_still_readable_time_usec = 0;
-        } else {
-            // Still readable. If it's been readable for a long time, there is probably
-            // lingering data on the pipe.
-            if (get_time() >= drain_if_still_readable_time_usec) {
-                drain_excessive_data();
+            case waiting_to_drain: {
+                // We wrote data to the pipe. Maybe read it back.
+                // If we are still readable, then there is still data on the pipe; maybe another
+                // change occurred with ours.
+                if (get_time() >= state_start_usec + k_flash_duration_usec) {
+                    drain_written();
+                    if (!select_wrapper_t::poll_fd_readable(pipe_fd.fd())) {
+                        set_state(waiting_for_readable);
+                    } else {
+                        set_state(polling_during_readable);
+                    }
+                }
+                return update_pipe_timestamps();
             }
         }
-        return true;
+        DIE("Unreachable");
     }
+
 #else  // this class isn't valid on this system
    public:
     universal_notifier_named_pipe_t(const wchar_t *test_path) {
@@ -1571,12 +1495,6 @@ universal_notifier_t::notifier_strategy_t universal_notifier_t::resolve_default_
     return strategy_notifyd;
 #elif defined(__CYGWIN__)
     return strategy_shmem_polling;
-#elif defined(SIGIO)
-    // The SIGIO notifier does not yet work on WSL. See #7429
-    if (is_windows_subsystem_for_linux()) {
-        return strategy_named_pipe;
-    }
-    return strategy_sigio;
 #else
     return strategy_named_pipe;
 #endif
@@ -1596,9 +1514,6 @@ std::unique_ptr<universal_notifier_t> universal_notifier_t::new_notifier_for_str
         }
         case strategy_shmem_polling: {
             return make_unique<universal_notifier_shmem_poller_t>();
-        }
-        case strategy_sigio: {
-            return make_unique<universal_notifier_sigio_t>(test_path);
         }
         case strategy_named_pipe: {
             return make_unique<universal_notifier_named_pipe_t>(test_path);

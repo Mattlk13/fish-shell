@@ -386,4 +386,40 @@ echo >$dir/target
 complete -C ': $dir/'
 # CHECK: $dir/target
 rm $dir/target
-rmdir $dir
+
+cd $dir
+touch yummyinmytummy
+complete -c fudge -f
+complete -c fudge -n '__fish_seen_subcommand_from eat' -F
+complete -C'fudge eat yummyin'
+# CHECK: yummyinmytummy
+cd -
+
+rm -r $dir
+
+set -l dir (mktemp -d)
+cd $dir
+cd -
+
+: >command-not-in-path
+chmod +x command-not-in-path
+complete -p $PWD/command-not-in-path -xa relative-path
+complete -C './command-not-in-path '
+# CHECK: relative-path
+
+# Non-canonical command path
+mkdir -p subdir
+: >subdir/command-in-subdir
+chmod +x subdir/command-in-subdir
+complete -p "$PWD/subdir/command-in-subdir" -xa custom-completions
+complete -C './subdir/../subdir/command-in-subdir '
+# CHECK: custom-completions
+
+# Relative $PATH
+begin
+    set -lx PATH subdir $PATH
+    complete -C 'command-in-subdir '
+    # CHECK: custom-completions
+end
+
+rm -r $dir

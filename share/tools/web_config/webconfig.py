@@ -1,7 +1,6 @@
 from __future__ import unicode_literals
 from __future__ import print_function
 import binascii
-import cgi
 
 try:
     from html import escape as escape_html
@@ -21,6 +20,11 @@ import tempfile
 import threading
 from itertools import chain
 
+COMMON_WSL_CMD_PATHS = (
+    "/mnt/c/Windows/System32",
+    "/windir/c/Windows/System32",
+    "/c/Windows/System32",
+)
 FISH_BIN_PATH = False  # will be set later
 IS_PY2 = sys.version_info[0] == 2
 
@@ -33,9 +37,27 @@ else:
     import socketserver as SocketServer
     from urllib.parse import parse_qs
 
+try:
+    import json
+except ImportError:
+    import simplejson as json
 
-def find_executable(exe):
-    for p in os.environ["PATH"].split(os.pathsep):
+
+# Disable CLI web browsers
+term = os.environ.pop("TERM", None)
+# This import must be done with an empty $TERM, otherwise a command-line browser may be started
+# which will block the whole process - see https://docs.python.org/3/library/webbrowser.html
+import webbrowser
+
+if term:
+    os.environ["TERM"] = term
+
+
+def find_executable(exe, paths=()):
+    final_path = os.environ["PATH"].split(os.pathsep)
+    if paths:
+        final_path.extend(paths)
+    for p in final_path:
         proposed_path = os.path.join(p, exe)
         if os.access(proposed_path, os.X_OK):
             return proposed_path
@@ -64,19 +86,14 @@ def is_termux():
     return "com.termux" in os.environ["PATH"] and find_executable("termux-open-url")
 
 
-# Disable CLI web browsers
-term = os.environ.pop("TERM", None)
-# This import must be done with an empty $TERM, otherwise a command-line browser may be started
-# which will block the whole process - see https://docs.python.org/3/library/webbrowser.html
-import webbrowser
-
-if term:
-    os.environ["TERM"] = term
-
-try:
-    import json
-except ImportError:
-    import simplejson as json
+def is_chromeos_garcon():
+    """ Return whether we are running in Chrome OS and the browser can't see local files """
+    # In Crostini Chrome OS Linux, the default browser opens URLs in Chrome
+    # running outside the linux VM. This browser does not have access to the
+    # Linux filesystem. This uses Garcon, see for example
+    # https://chromium.googlesource.com/chromiumos/platform2/+/master/vm_tools/garcon/#opening-urls
+    # https://source.chromium.org/search?q=garcon-url-handler
+    return "garcon-url-handler" in webbrowser.get().name
 
 
 def run_fish_cmd(text):
@@ -222,10 +239,10 @@ def parse_bool(val):
 def html_color_for_ansi_color_index(val):
     arr = [
         "black",
-        "#AA0000",
-        "#00AA00",
+        "#FF0000",
+        "#00FF00",
         "#AA5500",
-        "#0000AA",
+        "#0000FF",
         "#AA00AA",
         "#00AAAA",
         "#AAAAAA",
@@ -848,7 +865,7 @@ class BindingParser:
         return readable_command + result
 
 
-class FishConfigTCPServer(SocketServer.TCPServer):
+class FishConfigTCPServer(SocketServer.ThreadingMixIn, SocketServer.TCPServer):
     """TCPServer that only accepts connections from localhost (IPv4/IPv6)."""
 
     WHITELIST = set(["::1", "::ffff:127.0.0.1", "127.0.0.1"])
@@ -863,7 +880,8 @@ class FishConfigHTTPRequestHandler(SimpleHTTPServer.SimpleHTTPRequestHandler):
     def write_to_wfile(self, txt):
         self.wfile.write(txt.encode("utf-8"))
 
-    def do_get_colors(self):
+    def do_get_colors(self, path=None):
+        """ Read the colors from a .theme file in path, or the current shell if no path has been given """
         # Looks for fish_color_*.
         # Returns an array of lists [color_name, color_description, color_value]
         result = []
@@ -885,7 +903,8 @@ class FishConfigHTTPRequestHandler(SimpleHTTPServer.SimpleHTTPRequestHandler):
                 "quote",
                 "redirection",
                 "valid_path",
-                "autosuggestion" "user",
+                "autosuggestion",
+                "user",
                 "host",
                 "cancel",
             ]
@@ -916,8 +935,29 @@ class FishConfigHTTPRequestHandler(SimpleHTTPServer.SimpleHTTPRequestHandler):
             "cancel": "The ^C cancel indicator",
         }
 
-        out, err = run_fish_cmd("set -L")
+        # If we don't have a path, we get the current theme.
+        if not path:
+            out, err = run_fish_cmd("set -L")
+        else:
+            with open(path) as f:
+                out = f.read()
+        extrainfo = {}
         for line in out.split("\n"):
+            # Ignore empty lines
+            if not line: continue
+            # Lines starting with "#" can contain metadata.
+            if line.startswith("#"):
+                if not ":" in line: continue
+                key, value = line.split(":", maxsplit=1)
+                key = key.strip("# '")
+                value = value.strip(" '\"")
+                # Only use keys we know
+                if not key in ("name", "preferred_background", "url"): continue
+                if key == "preferred_background":
+                    if value not in named_colors and not value.startswith("#"):
+                        value = "#" + value
+                extrainfo[key] = value
+
 
             for match in re.finditer(r"^fish_color_(\S+) ?(.*)", line):
                 color_name, color_value = [x.strip() for x in match.group(1, 2)]
@@ -936,7 +976,7 @@ class FishConfigHTTPRequestHandler(SimpleHTTPServer.SimpleHTTPRequestHandler):
             color_desc = descriptions.get(color_name, "")
             result.append([color_name, color_desc, parse_color("")])
 
-        return result
+        return result, extrainfo
 
     def do_get_functions(self):
         out, err = run_fish_cmd("functions")
@@ -973,6 +1013,9 @@ class FishConfigHTTPRequestHandler(SimpleHTTPServer.SimpleHTTPRequestHandler):
         for name in self.do_get_variable_names("set -nxL"):
             if name in vars:
                 vars[name].exported = True
+
+        # Do not return history as a variable, it may be so large the browser hangs.
+        vars.pop("history", None)
 
         return [
             vars[key].get_json_obj()
@@ -1054,9 +1097,11 @@ class FishConfigHTTPRequestHandler(SimpleHTTPServer.SimpleHTTPRequestHandler):
         return out
 
     def do_set_color_for_variable(
-        self, name, color, background_color, bold, underline, italics, dim, reverse
+        self, name, color
     ):
         "Sets a color for a fish color name, like 'autosuggestion'"
+        if not name:
+            raise ValueError
         if not color:
             color = "normal"
         varname = "fish_color_" + name
@@ -1066,20 +1111,7 @@ class FishConfigHTTPRequestHandler(SimpleHTTPServer.SimpleHTTPRequestHandler):
             varname = name
         # TODO: Check if the varname is allowable.
         command = "set -U " + varname
-        if color:
-            command += " " + color
-        if background_color:
-            command += " --background=" + background_color
-        if bold:
-            command += " --bold"
-        if underline:
-            command += " --underline"
-        if italics:
-            command += " --italics"
-        if dim:
-            command += " --dim"
-        if reverse:
-            command += " --reverse"
+        command += " " + color
 
         out, err = run_fish_cmd(command)
         return out
@@ -1098,19 +1130,25 @@ class FishConfigHTTPRequestHandler(SimpleHTTPServer.SimpleHTTPRequestHandler):
         return True
 
     def do_set_prompt_function(self, prompt_func):
-        cmd = prompt_func + "\n" + "funcsave fish_prompt"
+        cmd = "functions -e fish_right_prompt; " + prompt_func + "\n" + "funcsave fish_prompt && funcsave fish_right_prompt 2>/dev/null"
         out, err = run_fish_cmd(cmd)
         return len(err) == 0
 
-    def do_get_prompt(self, command_to_run, prompt_function_text, extras_dict):
+    def do_get_prompt(self, prompt_function_text, extras_dict):
         # Return the prompt output by the given command
-        prompt_demo_ansi, err = run_fish_cmd(command_to_run)
+        cmd = prompt_function_text + '\n builtin cd "' + initial_wd + '" \n false \n fish_prompt\n'
+        prompt_demo_ansi, err = run_fish_cmd(cmd)
         prompt_demo_html = ansi_to_html(prompt_demo_ansi)
-        prompt_demo_font_size = self.font_size_for_ansi_prompt(prompt_demo_ansi)
+        right_demo_ansi, err = run_fish_cmd(
+            "functions -e fish_right_prompt; " + prompt_function_text + '\n builtin cd "' + initial_wd + '" \n false \n functions -q fish_right_prompt && fish_right_prompt\n'
+        )
+        right_demo_html = ansi_to_html(right_demo_ansi)
+        prompt_demo_font_size = self.font_size_for_ansi_prompt(prompt_demo_ansi + right_demo_ansi)
         result = {
             "function": prompt_function_text,
             "demo": prompt_demo_html,
             "font_size": prompt_demo_font_size,
+            "right": right_demo_html,
         }
         if extras_dict:
             result.update(extras_dict)
@@ -1119,9 +1157,8 @@ class FishConfigHTTPRequestHandler(SimpleHTTPServer.SimpleHTTPRequestHandler):
     def do_get_current_prompt(self):
         # Return the current prompt. We run 'false' to demonstrate how the
         # prompt shows the command status (#1624).
-        prompt_func, err = run_fish_cmd("functions fish_prompt")
+        prompt_func, err = run_fish_cmd("functions fish_prompt; functions fish_right_prompt")
         result = self.do_get_prompt(
-            'builtin cd "' + initial_wd + '" ; false ; fish_prompt',
             prompt_func.strip(),
             {"name": "Current"},
         )
@@ -1131,8 +1168,7 @@ class FishConfigHTTPRequestHandler(SimpleHTTPServer.SimpleHTTPRequestHandler):
         # Return the prompt you get from the given text. Extras_dict is a
         # dictionary whose values get merged in. We run 'false' to demonstrate
         # how the prompt shows the command status (#1624)
-        cmd = text + '\n builtin cd "' + initial_wd + '" \n false \n fish_prompt\n'
-        return self.do_get_prompt(cmd, text.strip(), extras_dict)
+        return self.do_get_prompt(text.strip(), extras_dict)
 
     def parse_one_sample_prompt_hash(self, line, result_dict):
         # Allow us to skip whitespace, etc.
@@ -1178,7 +1214,7 @@ class FishConfigHTTPRequestHandler(SimpleHTTPServer.SimpleHTTPRequestHandler):
             return None
 
     def do_get_sample_prompts_list(self):
-        paths = glob.iglob("sample_prompts/*.fish")
+        paths = sorted(glob.iglob("sample_prompts/*.fish"))
         result = []
         try:
             pool = multiprocessing.pool.ThreadPool(processes=8)
@@ -1274,7 +1310,26 @@ class FishConfigHTTPRequestHandler(SimpleHTTPServer.SimpleHTTPRequestHandler):
         self.path = p
 
         if p == "/colors/":
-            output = self.do_get_colors()
+            # Construct our colorschemes.
+            # Add the current scheme first, then the default.
+            # The rest in alphabetical order.
+            curcolors, curinfo = self.do_get_colors()
+            defcolors, definfo = self.do_get_colors("themes/fish default.theme")
+            curinfo.update({ "theme": "Current", "colors": curcolors})
+            definfo.update({ "theme": "fish default", "colors": defcolors})
+            output = [curinfo, definfo]
+
+            confighome = os.environ["XDG_CONFIG_HOME"] if "XDG_CONFIG_HOME" in os.environ else os.path.expanduser("~")
+            paths = list(glob.iglob(os.path.join(confighome, "fish", "themes/*.theme")))
+            paths.extend(list(glob.iglob("themes/*.theme")))
+            paths.sort(key=str.casefold)
+
+            for p in paths:
+                theme = os.path.splitext(os.path.basename(p))[0]
+                if any(theme == d["theme"] for d in output): continue
+                out, outinfo = self.do_get_colors(p)
+                outinfo.update({ "theme": theme, "colors": out })
+                output.append(outinfo)
         elif p == "/functions/":
             output = self.do_get_functions()
         elif p == "/variables/":
@@ -1315,43 +1370,44 @@ class FishConfigHTTPRequestHandler(SimpleHTTPServer.SimpleHTTPRequestHandler):
             return self.send_error(403)
         self.path = p
 
-        ctype, pdict = cgi.parse_header(self.headers["content-type"])
+        # This is cheesy, we want just the actual content-type.
+        # In some cases it'll give us the encoding as well,
+        # ("application/json;charset=utf-8")
+        # but we don't currently care.
+        ctype = self.headers["content-type"].split(";")[0]
 
-        if ctype == "multipart/form-data":
-            postvars = cgi.parse_multipart(self.rfile, pdict)
-        elif ctype == "application/x-www-form-urlencoded":
+        if ctype == "application/x-www-form-urlencoded":
             length = int(self.headers["content-length"])
             url_str = self.rfile.read(length).decode("utf-8")
             postvars = parse_qs(url_str, keep_blank_values=1)
         elif ctype == "application/json":
             length = int(self.headers["content-length"])
-            url_str = self.rfile.read(length).decode(pdict["charset"])
+            # This used to use the provided encoding, but we use utf-8
+            # all around the place and nobody has ever complained.
+            #
+            # If any other encoding is received this will raise a UnicodeError,
+            # which will throw us out of the function and should at most exit webconfig.
+            # If that happens to anyone we expect bug reports.
+            url_str = self.rfile.read(length).decode("utf-8")
             postvars = json.loads(url_str)
+        elif ctype == "multipart/form-data":
+            # This used to be a thing, as far as I could find there's
+            # no use anymore, but let's keep an error around just in case.
+            return self.send_error(500)
         else:
             postvars = {}
 
         if p == "/set_color/":
-            what = postvars.get("what")
-            color = postvars.get("color")
-            background_color = postvars.get("background_color")
-            bold = postvars.get("bold")
-            italics = postvars.get("italics")
-            reverse = postvars.get("reverse")
-            dim = postvars.get("dim")
-            underline = postvars.get("underline")
+            print("# Colorscheme: " + postvars.get("theme"))
+            for item in postvars.get("colors"):
+                what = item.get("what")
+                color = item.get("color")
 
-            if what:
-                # Not sure why we get lists here?
-                output = self.do_set_color_for_variable(
-                    what[0],
-                    color[0],
-                    background_color[0],
-                    parse_bool(bold[0]),
-                    parse_bool(underline[0]),
-                    parse_bool(italics[0]),
-                    parse_bool(dim[0]),
-                    parse_bool(reverse[0]),
-                )
+                if what:
+                    output = self.do_set_color_for_variable(
+                        what,
+                        color,
+                    )
             else:
                 output = "Bad request"
         elif p == "/get_function/":
@@ -1398,9 +1454,9 @@ class FishConfigHTTPRequestHandler(SimpleHTTPServer.SimpleHTTPRequestHandler):
         pass
 
     def log_error(self, format, *args):
-        if format == "code %d, message %s":
+        if format == "code %d, message %s" and hasattr(self, 'path'):
             # This appears to be a send_error() message
-            # We want to include the path
+            # We want to include the path (if we have one)
             (code, msg) = args
             format = "code %d, message %s, path %s"
             args = (code, msg, self.path)
@@ -1490,7 +1546,7 @@ if len(sys.argv) > 1:
         "abbreviations",
     ]:
         if tab.startswith(sys.argv[1]):
-            initial_tab = "#" + tab
+            initial_tab = "#!/" + tab
             break
 
 url = "http://localhost:%d/%s/%s" % (PORT, authkey, initial_tab)
@@ -1519,9 +1575,16 @@ def runThing():
     if isMacOS10_12_5_OrLater():
         subprocess.check_call(["open", fileurl])
     elif is_wsl():
-        subprocess.call(["cmd.exe", "/c", "start %s" % url])
+        cmd_path = find_executable("cmd.exe", COMMON_WSL_CMD_PATHS)
+        if cmd_path:
+            subprocess.call([cmd_path, "/c", "start %s" % url])
+        else:
+            print("Please add the directory containing cmd.exe to your $PATH")
+            sys.exit(-1)
     elif is_termux():
         subprocess.call(["termux-open-url", url])
+    elif is_chromeos_garcon():
+        webbrowser.open(url)
     else:
         webbrowser.open(fileurl)
 
@@ -1530,6 +1593,11 @@ def runThing():
 # so we just spawn it in a thread.
 thread = threading.Thread(target=runThing)
 thread.start()
+
+# Safari will open sockets and not write to them, causing potential hangs
+# on shutdown.
+httpd.block_on_close = False
+httpd.daemon_threads = True
 
 # Select on stdin and httpd
 stdin_no = sys.stdin.fileno()

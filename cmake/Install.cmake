@@ -91,7 +91,9 @@ fish_create_dirs(${rel_datadir}/fish ${rel_datadir}/fish/completions
                  ${rel_datadir}/fish/tools/web_config
                  ${rel_datadir}/fish/tools/web_config/js
                  ${rel_datadir}/fish/tools/web_config/partials
-                 ${rel_datadir}/fish/tools/web_config/sample_prompts)
+                 ${rel_datadir}/fish/tools/web_config/sample_prompts
+                 ${rel_datadir}/fish/tools/web_config/themes
+                 )
 
 configure_file(share/__fish_build_paths.fish.in share/__fish_build_paths.fish)
 install(FILES share/config.fish
@@ -110,7 +112,7 @@ add_custom_command(OUTPUT fish.pc
     COMMAND printf "Version: " >> fish.pc
     COMMAND sed 's/FISH_BUILD_VERSION=//\;s/\"//g' ${FBVF} >> fish.pc
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
-    DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/${FBVF} ${CMAKE_CURRENT_BINARY_DIR}/fish.pc.noversion)
+    DEPENDS CHECK-FISH-BUILD-VERSION-FILE ${CMAKE_CURRENT_BINARY_DIR}/fish.pc.noversion)
 
 add_custom_target(build_fish_pc ALL DEPENDS fish.pc)
 
@@ -147,6 +149,7 @@ install(DIRECTORY share/tools/web_config
         PATTERN "*.html"
         PATTERN "*.py"
         PATTERN "*.js"
+        PATTERN "*.theme"
         PATTERN "*.fish")
 
 # Building the man pages is optional: if Sphinx isn't installed, they're not built

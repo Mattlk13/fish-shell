@@ -39,6 +39,8 @@ The following options are available:
 
 You should not assume that only five lines will be written since we may add additional information to the output in the future.
 
+- ``--no-details`` turns off function path reporting, so just the definition will be printed.
+
 - ``-n`` or ``--names`` lists the names of all defined functions.
 
 - ``-q`` or ``--query`` tests if the specified functions exist.
@@ -52,8 +54,6 @@ You should not assume that only five lines will be written since we may add addi
 The default behavior of ``functions``, when called with no arguments, is to print the names of all defined functions. Unless the ``-a`` option is given, no functions starting with underscores are included in the output.
 
 If any non-option parameters are given, the definition of the specified functions are printed.
-
-Automatically loaded functions cannot be removed using ``functions -e``. Either remove the definition file or change the $fish_function_path variable to remove autoloaded functions.
 
 Copying a function using ``-c`` copies only the body of the function, and does not attach any event notifications from the original function.
 
@@ -77,3 +77,7 @@ Examples
     functions -e bar
     # Erases the function ``bar``
 
+See more
+--------
+
+For more explanation of how functions fit into fish, see :ref:`Functions <syntax-function>`.

@@ -104,36 +104,39 @@ size_t parse_util_get_offset(const wcstring &str, int line, long line_offset) {
     return off + line_offset;
 }
 
-static int parse_util_locate_brackets_of_type(const wchar_t *in, wchar_t **begin, wchar_t **end,
-                                              bool allow_incomplete, wchar_t open_type,
-                                              wchar_t close_type) {
-    // open_type is typically ( or [, and close type is the corresponding value.
-    wchar_t *pos;
-    wchar_t prev = 0;
+static int parse_util_locate_cmdsub(const wchar_t *in, const wchar_t **begin, const wchar_t **end,
+                                    bool allow_incomplete, bool *is_quoted) {
+    bool escaped = false;
     bool syntax_error = false;
     int paran_count = 0;
+    std::vector<int> quoted_cmdsubs;
 
-    wchar_t *paran_begin = nullptr, *paran_end = nullptr;
+    const wchar_t *paran_begin = nullptr, *paran_end = nullptr;
 
     assert(in && "null parameter");
-
-    for (pos = const_cast<wchar_t *>(in); *pos; pos++) {
-        if (prev != '\\') {
-            if (std::wcschr(L"\'\"", *pos)) {
-                wchar_t *q_end = quote_end(pos);
+    for (const wchar_t *pos = in; *pos; pos++) {
+        if (!escaped) {
+            if (*pos == L'\'' || *pos == L'"') {
+                const wchar_t *q_end = quote_end(pos, *pos);
                 if (q_end && *q_end) {
+                    if (*q_end == L'$') {
+                        quoted_cmdsubs.push_back(paran_count);
+                        // We want to report if the outermost comand substitution between
+                        // paran_begin..paran_end is quoted.
+                        if (paran_count == 0 && is_quoted) *is_quoted = true;
+                    }
                     pos = q_end;
                 } else {
                     break;
                 }
             } else {
-                if (*pos == open_type) {
+                if (*pos == L'(') {
                     if ((paran_count == 0) && (paran_begin == nullptr)) {
                         paran_begin = pos;
                     }
 
                     paran_count++;
-                } else if (*pos == close_type) {
+                } else if (*pos == L')') {
                     paran_count--;
 
                     if ((paran_count == 0) && (paran_end == nullptr)) {
@@ -145,10 +148,32 @@ static int parse_util_locate_brackets_of_type(const wchar_t *in, wchar_t **begin
                         syntax_error = true;
                         break;
                     }
+
+                    // Check if the ) did complete a quoted command substituion.
+                    if (!quoted_cmdsubs.empty() && quoted_cmdsubs.back() == paran_count) {
+                        quoted_cmdsubs.pop_back();
+                        // Quoted command substitutions temporarily close double quotes.
+                        // In "foo$(bar)baz$(qux)"
+                        // We are here ^
+                        // After the ) in a quoted command substitution, we need to act as if
+                        // there was an invisible double quote.
+                        const wchar_t *q_end = quote_end(pos, L'"');
+                        if (q_end && *q_end) {  // Found a valid closing quote.
+                            // Stop at $(qux), which is another quoted command substitution.
+                            if (*q_end == L'$') quoted_cmdsubs.push_back(paran_count);
+                            pos = q_end;
+                        } else {
+                            break;
+                        }
+                    }
                 }
             }
         }
-        prev = *pos;
+        if (*pos == '\\') {
+            escaped = !escaped;
+        } else {
+            escaped = false;
+        }
     }
 
     syntax_error |= (paran_count < 0);
@@ -167,26 +192,58 @@ static int parse_util_locate_brackets_of_type(const wchar_t *in, wchar_t **begin
     }
 
     if (end) {
-        *end = paran_count ? const_cast<wchar_t *>(in) + std::wcslen(in) : paran_end;
+        *end = paran_count ? in + std::wcslen(in) : paran_end;
     }
 
     return 1;
 }
 
-int parse_util_locate_cmdsubst(const wchar_t *in, wchar_t **begin, wchar_t **end,
-                               bool accept_incomplete) {
-    return parse_util_locate_brackets_of_type(in, begin, end, accept_incomplete, L'(', L')');
+long parse_util_slice_length(const wchar_t *in) {
+    assert(in && "null parameter");
+    const wchar_t openc = L'[';
+    const wchar_t closec = L']';
+    bool escaped = false;
+
+    // Check for initial opening [
+    if (*in != openc) return 0;
+    int bracket_count = 1;
+
+    assert(in && "null parameter");
+    for (const wchar_t *pos = in + 1; *pos; pos++) {
+        if (!escaped) {
+            if (*pos == L'\'' || *pos == L'"') {
+                const wchar_t *q_end = quote_end(pos, *pos);
+                if (q_end && *q_end) {
+                    pos = q_end;
+                } else {
+                    break;
+                }
+            } else {
+                if (*pos == openc) {
+                    bracket_count++;
+                } else if (*pos == closec) {
+                    bracket_count--;
+                    if (bracket_count == 0) {
+                        // pos points at the closing ], so add 1.
+                        return pos - in + 1;
+                    }
+                }
+            }
+        }
+        if (*pos == '\\') {
+            escaped = !escaped;
+        } else {
+            escaped = false;
+        }
+    }
+    assert(bracket_count > 0 && "Should have unclosed brackets");
+    return -1;
 }
 
-int parse_util_locate_slice(const wchar_t *in, wchar_t **begin, wchar_t **end,
-                            bool accept_incomplete) {
-    return parse_util_locate_brackets_of_type(in, begin, end, accept_incomplete, L'[', L']');
-}
 
-static int parse_util_locate_brackets_range(const wcstring &str, size_t *inout_cursor_offset,
-                                            wcstring *out_contents, size_t *out_start,
-                                            size_t *out_end, bool accept_incomplete,
-                                            wchar_t open_type, wchar_t close_type) {
+int parse_util_locate_cmdsubst_range(const wcstring &str, size_t *inout_cursor_offset,
+                                     wcstring *out_contents, size_t *out_start, size_t *out_end,
+                                     bool accept_incomplete, bool *out_is_quoted) {
     // Clear the return values.
     if (out_contents != nullptr) out_contents->clear();
     *out_start = 0;
@@ -199,10 +256,11 @@ static int parse_util_locate_brackets_range(const wcstring &str, size_t *inout_c
     const wchar_t *const buff = str.c_str();
     const wchar_t *const valid_range_start = buff + *inout_cursor_offset,
                          *valid_range_end = buff + str.size();
-    wchar_t *bracket_range_begin = nullptr, *bracket_range_end = nullptr;
-    int ret = parse_util_locate_brackets_of_type(valid_range_start, &bracket_range_begin,
-                                                 &bracket_range_end, accept_incomplete, open_type,
-                                                 close_type);
+    const wchar_t *bracket_range_begin = nullptr;
+    const wchar_t *bracket_range_end = nullptr;
+
+    int ret = parse_util_locate_cmdsub(valid_range_start, &bracket_range_begin, &bracket_range_end,
+                                       accept_incomplete, out_is_quoted);
     if (ret <= 0) {
         return ret;
     }
@@ -230,13 +288,6 @@ static int parse_util_locate_brackets_range(const wcstring &str, size_t *inout_c
     return ret;
 }
 
-int parse_util_locate_cmdsubst_range(const wcstring &str, size_t *inout_cursor_offset,
-                                     wcstring *out_contents, size_t *out_start, size_t *out_end,
-                                     bool accept_incomplete) {
-    return parse_util_locate_brackets_range(str, inout_cursor_offset, out_contents, out_start,
-                                            out_end, accept_incomplete, L'(', L')');
-}
-
 void parse_util_cmdsubst_extent(const wchar_t *buff, size_t cursor_pos, const wchar_t **a,
                                 const wchar_t **b) {
     assert(buff && "Null buffer");
@@ -249,8 +300,8 @@ void parse_util_cmdsubst_extent(const wchar_t *buff, size_t cursor_pos, const wc
     const wchar_t *ap = buff, *bp = buff + bufflen;
     const wchar_t *pos = buff;
     for (;;) {
-        wchar_t *begin = nullptr, *end = nullptr;
-        if (parse_util_locate_cmdsubst(pos, &begin, &end, true) <= 0) {
+        const wchar_t *begin = nullptr, *end = nullptr;
+        if (parse_util_locate_cmdsub(pos, &begin, &end, true, nullptr) <= 0) {
             // No subshell found, all done.
             break;
         }
@@ -455,7 +506,7 @@ wcstring parse_util_unescape_wildcards(const wcstring &str) {
 static wchar_t get_quote(const wcstring &cmd_str, size_t len) {
     size_t i = 0;
     wchar_t res = 0;
-    const wchar_t *const cmd = cmd_str.c_str();
+    const wchar_t *cmd = cmd_str.c_str();
 
     while (true) {
         if (!cmd[i]) break;
@@ -466,8 +517,7 @@ static wchar_t get_quote(const wcstring &cmd_str, size_t len) {
             i++;
         } else {
             if (cmd[i] == L'\'' || cmd[i] == L'\"') {
-                const wchar_t *end = quote_end(&cmd[i]);
-                // std::fwprintf( stderr, L"Jump %d\n",  end-cmd );
+                const wchar_t *end = quote_end(&cmd[i], cmd[i]);
                 if ((end == nullptr) || (!*end) || (end > cmd + len)) {
                     res = cmd[i];
                     break;
@@ -481,47 +531,15 @@ static wchar_t get_quote(const wcstring &cmd_str, size_t len) {
     return res;
 }
 
-void parse_util_get_parameter_info(const wcstring &cmd, const size_t pos, wchar_t *quote,
-                                   size_t *offset, token_type_t *out_type) {
-    size_t prev_pos = 0;
-    wchar_t last_quote = L'\0';
-
+wchar_t parse_util_get_quote_type(const wcstring &cmd, size_t pos) {
     tokenizer_t tok(cmd.c_str(), TOK_ACCEPT_UNFINISHED);
     while (auto token = tok.next()) {
-        if (token->offset > pos) break;
-
-        if (token->type == token_type_t::string)
-            last_quote = get_quote(tok.text_of(*token), pos - token->offset);
-
-        if (out_type != nullptr) *out_type = token->type;
-
-        prev_pos = token->offset;
-    }
-
-    wchar_t *cmd_tmp = wcsdup(cmd.c_str());
-    cmd_tmp[pos] = 0;
-    size_t cmdlen = pos;
-    bool finished = cmdlen != 0;
-    if (finished) {
-        finished = (quote == nullptr);
-        if (finished && std::wcschr(L" \t\n\r", cmd_tmp[cmdlen - 1])) {
-            finished = cmdlen > 1 && cmd_tmp[cmdlen - 2] == L'\\';
+        if (token->type == token_type_t::string &&
+            token->location_in_or_at_end_of_source_range(pos)) {
+            return get_quote(tok.text_of(*token), pos - token->offset);
         }
     }
-
-    if (quote) *quote = last_quote;
-
-    if (offset != nullptr) {
-        if (finished) {
-            while ((cmd_tmp[prev_pos] != 0) && (std::wcschr(L";|", cmd_tmp[prev_pos]) != nullptr))
-                prev_pos++;
-            *offset = prev_pos;
-        } else {
-            *offset = pos;
-        }
-    }
-
-    free(cmd_tmp);
+    return L'\0';
 }
 
 wcstring parse_util_escape_string_with_quote(const wcstring &cmd, wchar_t quote, bool no_tilde) {
@@ -656,10 +674,30 @@ std::vector<int> parse_util_compute_indents(const wcstring &src) {
                     inc = 1;
                     dec = node.parent->as<switch_statement_t>()->end.unsourced ? 0 : 1;
                     break;
-
+                case type_t::token_base: {
+                    auto tok = node.as<token_base_t>();
+                    if (node.parent->type == type_t::begin_header &&
+                        tok->type == parse_token_type_t::end) {
+                        // The newline after "begin" is optional, so it is part of the header.
+                        // The header is not in the indented block, so indent the newline here.
+                        if (node.source(src) == L"\n") {
+                            inc = 1;
+                            dec = 1;
+                        }
+                    }
+                    break;
+                }
                 default:
                     break;
             }
+
+            auto range = node.source_range();
+            if (range.length > 0 && node.category == category_t::leaf) {
+                record_line_continuations_until(range.start);
+                std::fill(indents.begin() + last_leaf_end, indents.begin() + range.start,
+                          last_indent);
+            }
+
             indent += inc;
 
             // If we increased the indentation, apply it to the remainder of the string, even if the
@@ -670,20 +708,14 @@ std::vector<int> parse_util_compute_indents(const wcstring &src) {
             //
             // we want to indent the newline.
             if (inc) {
-                std::fill(indents.begin() + last_leaf_end, indents.end(), indent);
                 last_indent = indent;
             }
 
             // If this is a leaf node, apply the current indentation.
-            if (node.category == category_t::leaf) {
-                auto range = node.source_range();
-                if (range.length > 0) {
-                    // Fill to the end.
-                    // Later nodes will come along and overwrite these.
-                    std::fill(indents.begin() + range.start, indents.end(), indent);
-                    last_leaf_end = range.start + range.length;
-                    last_indent = indent;
-                }
+            if (node.category == category_t::leaf && range.length > 0) {
+                std::fill(indents.begin() + range.start, indents.begin() + range.end(), indent);
+                last_leaf_end = range.start + range.length;
+                last_indent = indent;
             }
 
             node_visitor(*this).accept_children_of(&node);
@@ -693,6 +725,23 @@ std::vector<int> parse_util_compute_indents(const wcstring &src) {
         /// \return whether a maybe_newlines node contains at least one newline.
         bool has_newline(const maybe_newlines_t &nls) const {
             return nls.source(src).find(L'\n') != wcstring::npos;
+        }
+
+        void record_line_continuations_until(size_t offset) {
+            wcstring gap_text = src.substr(last_leaf_end, offset - last_leaf_end);
+            size_t escaped_nl = gap_text.find(L"\\\n");
+            if (escaped_nl == wcstring::npos) return;
+            auto line_end = gap_text.begin() + escaped_nl;
+            if (std::find(gap_text.begin(), line_end, L'#') != line_end) return;
+            auto end = src.begin() + offset;
+            auto newline = src.begin() + last_leaf_end + escaped_nl + 1;
+            // The gap text might contain multiple newlines if there are multiple lines that
+            // don't contain an AST node, for example, comment lines, or lines containing only
+            // the escaped newline.
+            do {
+                line_continuations.push_back(newline - src.begin());
+                newline = std::find(newline + 1, end, L'\n');
+            } while (newline != end);
         }
 
         // The one-past-the-last index of the most recently encountered leaf node.
@@ -711,10 +760,15 @@ std::vector<int> parse_util_compute_indents(const wcstring &src) {
         // Initialize our starting indent to -1, as our top-level node is a job list which
         // will immediately increment it.
         int indent{-1};
+
+        // List of locations of escaped newline characters.
+        std::vector<size_t> line_continuations;
     };
 
     indent_visitor_t iv(src, indents);
     node_visitor(iv).accept(ast.top());
+    iv.record_line_continuations_until(indents.size());
+    std::fill(indents.begin() + iv.last_leaf_end, indents.end(), iv.last_indent);
 
     // All newlines now get the *next* indent.
     // For example, in this code:
@@ -723,22 +777,25 @@ std::vector<int> parse_util_compute_indents(const wcstring &src) {
     // the newline "belongs" to the if statement as it ends its job.
     // But when rendered, it visually belongs to the job list.
 
-    // FIXME: if there's a middle newline, we will indent it wrongly.
-    // For example:
-    //    if true
-    //
-    //    end
-    // Here the middle newline should be indented by 1.
-
     size_t idx = src_size;
     int next_indent = iv.last_indent;
     while (idx--) {
         if (src.at(idx) == L'\n') {
-            indents.at(idx) = next_indent;
+            bool empty_middle_line = idx + 1 < src_size && src.at(idx + 1) == L'\n';
+            if (!empty_middle_line) {
+                indents.at(idx) = next_indent;
+            }
         } else {
             next_indent = indents.at(idx);
         }
     }
+    // Add an extra level of indentation to continuation lines.
+    for (size_t idx : iv.line_continuations) {
+        do {
+            indents.at(idx)++;
+        } while (++idx < src_size && src.at(idx) != L'\n');
+    }
+
     return indents;
 }
 
@@ -767,9 +824,7 @@ static int parser_is_pipe_forbidden(const wcstring &word) {
     return contains(forbidden_pipe_commands, word);
 }
 
-bool parse_util_argument_is_help(const wchar_t *s) {
-    return std::wcscmp(L"-h", s) == 0 || std::wcscmp(L"--help", s) == 0;
-}
+bool parse_util_argument_is_help(const wcstring &s) { return s == L"-h" || s == L"--help"; }
 
 // \return a pointer to the first argument node of an argument_or_redirection_list_t, or nullptr if
 // there are no arguments.
@@ -852,26 +907,6 @@ void parse_util_expand_variable_error(const wcstring &token, size_t global_token
             append_syntax_error(errors, global_dollar_pos, ERROR_NO_VAR_NAME);
             break;
         }
-        case '(': {
-            // e.g.: 'echo "foo$(bar)baz"
-            // Try to determine what's in the parens.
-            wcstring token_after_parens;
-            wcstring paren_text;
-            size_t open_parens = dollar_pos + 1, cmdsub_start = 0, cmdsub_end = 0;
-            if (parse_util_locate_cmdsubst_range(token, &open_parens, &paren_text, &cmdsub_start,
-                                                 &cmdsub_end, true) > 0) {
-                token_after_parens = tok_first(paren_text);
-            }
-
-            // Make sure we always show something.
-            if (token_after_parens.empty()) {
-                token_after_parens = get_ellipsis_str();
-            }
-
-            append_syntax_error(errors, global_dollar_pos, ERROR_BAD_VAR_SUBCOMMAND1,
-                                truncate(token_after_parens, var_err_len).c_str());
-            break;
-        }
         case L'\0': {
             append_syntax_error(errors, global_dollar_pos, ERROR_NO_VAR_NAME);
             break;
@@ -895,39 +930,6 @@ void parse_util_expand_variable_error(const wcstring &token, size_t global_token
 
     // We should have appended exactly one error.
     assert(errors->size() == start_error_count + 1);
-}
-
-/// Detect cases like $(abc). Given an arg like foo(bar), let arg_src be foo and cmdsubst_src be
-/// bar. If arg ends with VARIABLE_EXPAND, then report an error.
-static parser_test_error_bits_t detect_dollar_cmdsub_errors(size_t arg_src_offset,
-                                                            const wcstring &arg_src,
-                                                            const wcstring &cmdsubst_src,
-                                                            parse_error_list_t *out_errors) {
-    parser_test_error_bits_t result_bits = 0;
-    wcstring unescaped_arg_src;
-
-    if (!unescape_string(arg_src, &unescaped_arg_src, UNESCAPE_SPECIAL) ||
-        unescaped_arg_src.empty()) {
-        return result_bits;
-    }
-
-    wchar_t last = unescaped_arg_src.at(unescaped_arg_src.size() - 1);
-    if (last == VARIABLE_EXPAND) {
-        result_bits |= PARSER_TEST_ERROR;
-        if (out_errors != nullptr) {
-            wcstring subcommand_first_token = tok_first(cmdsubst_src);
-            if (subcommand_first_token.empty()) {
-                // e.g. $(). Report somthing.
-                subcommand_first_token = get_ellipsis_str();
-            }
-            append_syntax_error(
-                out_errors,
-                arg_src_offset + arg_src.size() - 1,  // global position of the dollar
-                ERROR_BAD_VAR_SUBCOMMAND1, truncate(subcommand_first_token, var_err_len).c_str());
-        }
-    }
-
-    return result_bits;
 }
 
 /// Test if this argument contains any errors. Detected errors include syntax errors in command
@@ -975,15 +977,6 @@ parser_test_error_bits_t parse_util_detect_errors_in_argument(const ast::argumen
 
                 if (out_errors != nullptr) {
                     out_errors->insert(out_errors->end(), subst_errors.begin(), subst_errors.end());
-
-                    // Hackish. Take this opportunity to report $(...) errors. We do this because
-                    // after we've replaced with internal separators, we can't distinguish between
-                    // "" and (), and also we no longer have the source of the command substitution.
-                    // As an optimization, this is only necessary if the last character is a $.
-                    if (paren_begin > 0 && arg_src.at(paren_begin - 1) == L'$') {
-                        err |= detect_dollar_cmdsub_errors(
-                            source_start, arg_src.substr(0, paren_begin), subst, out_errors);
-                    }
                 }
                 break;
             }
@@ -1010,7 +1003,7 @@ parser_test_error_bits_t parse_util_detect_errors_in_argument(const ast::argumen
 
         wchar_t next_char = idx + 1 < unesc_size ? unesc.at(idx + 1) : L'\0';
         if (next_char != VARIABLE_EXPAND && next_char != VARIABLE_EXPAND_SINGLE &&
-            !valid_var_name_char(next_char)) {
+            next_char != '(' && !valid_var_name_char(next_char)) {
             err = 1;
             if (out_errors) {
                 // We have something like $$$^....  Back up until we reach the first $.
@@ -1088,7 +1081,7 @@ static bool detect_errors_in_decorated_statement(const wcstring &buff_src,
     bool first_arg_is_help = false;
     if (const auto *arg = get_first_arg(dst.args_or_redirs)) {
         const wcstring &arg_src = arg->source(buff_src, storage);
-        first_arg_is_help = parse_util_argument_is_help(arg_src.c_str());
+        first_arg_is_help = parse_util_argument_is_help(arg_src);
     }
 
     // Get the statement we are part of.

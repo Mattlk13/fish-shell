@@ -347,24 +347,31 @@ $FISH -c 'set -q testu; or echo testu undef in sub shell'
 
 # test SHLVL
 # use a subshell to ensure a clean slate
-env SHLVL= $FISH -c 'echo SHLVL: $SHLVL; $FISH -c \'echo SHLVL: $SHLVL\''
+env SHLVL= $FISH -ic 'echo SHLVL: $SHLVL; $FISH -ic \'echo SHLVL: $SHLVL\''
 # CHECK: SHLVL: 1
 # CHECK: SHLVL: 2
 
-# exec should decrement SHLVL
-env SHLVL= $FISH -c 'echo SHLVL: $SHLVL; exec $FISH -c \'echo SHLVL: $SHLVL\''
-# CHECK: SHLVL: 1
-# CHECK: SHLVL: 1
+# exec should decrement SHLVL - outer fish increments by 1, decrements for exec,
+# inner fish increments again so the value stays the same.
+env SHLVL=1 $FISH -ic 'echo SHLVL: $SHLVL; exec $FISH -ic \'echo SHLVL: $SHLVL\''
+# CHECK: SHLVL: 2
+# CHECK: SHLVL: 2
 
 # garbage SHLVLs should be treated as garbage
-env SHLVL=3foo $FISH -c 'echo SHLVL: $SHLVL'
+env SHLVL=3foo $FISH -ic 'echo SHLVL: $SHLVL'
 # CHECK: SHLVL: 1
 
 # whitespace is allowed though (for bash compatibility)
-env SHLVL="3  " $FISH -c 'echo SHLVL: $SHLVL'
-env SHLVL="  3" $FISH -c 'echo SHLVL: $SHLVL'
+env SHLVL="3  " $FISH -ic 'echo SHLVL: $SHLVL'
+env SHLVL="  3" $FISH -ic 'echo SHLVL: $SHLVL'
 # CHECK: SHLVL: 4
 # CHECK: SHLVL: 4
+
+# Non-interactive fish doesn't touch $SHLVL
+env SHLVL=2 $FISH -c 'echo SHLVL: $SHLVL'
+# CHECK: SHLVL: 2
+env SHLVL=banana $FISH -c 'echo SHLVL: $SHLVL'
+# CHECK: SHLVL: banana
 
 # Test transformation of inherited variables
 env DISPLAY="localhost:0.0" $FISH -c 'echo Elements in DISPLAY: (count $DISPLAY)'
@@ -504,7 +511,11 @@ sh -c "EDITOR='vim -g' $FISH -c "'\'set -S EDITOR\'' | string match -r -e 'globa
 
 # Verify behavior of `set --show` given an invalid var name
 set --show 'argle bargle'
-#CHECKERR: $argle bargle: invalid var name
+#CHECKERR: set: Variable name 'argle bargle' is not valid. See `help identifiers`.
+#CHECKERR: {{.*}}set.fish (line {{\d+}}):
+#CHECKERR: set --show 'argle bargle'
+#CHECKERR: ^
+#CHECKERR: (Type 'help set' for related documentation)
 
 # Verify behavior of `set --show`
 set semiempty ''
@@ -682,4 +693,35 @@ echo $foo
 echo $bar
 #CHECK: 1 3
 
+
+# Test that `set -q` does not return 0 if there are 256 missing variables
+
+set -lq a(seq 1 256)
+echo $status
+#CHECK: 255
+
 true
+
+set "" foo
+#CHECKERR: set: Variable name '' is not valid. See `help identifiers`.
+#CHECKERR: {{.*}}set.fish (line {{\d+}}): 
+#CHECKERR: set "" foo
+#CHECKERR: ^
+#CHECKERR: (Type 'help set' for related documentation)
+
+set --show ""
+#CHECKERR: set: Variable name '' is not valid. See `help identifiers`.
+#CHECKERR: {{.*}}set.fish (line {{\d+}}): 
+#CHECKERR: set --show ""
+#CHECKERR: ^
+#CHECKERR: (Type 'help set' for related documentation)
+
+# Test path splitting
+begin
+    set -l PATH /usr/local/bin:/usr/bin
+    echo $PATH
+    # CHECK: /usr/local/bin /usr/bin
+    set -l CDPATH .:/usr
+    echo $CDPATH
+    # CHECK: . /usr
+end

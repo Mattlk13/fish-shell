@@ -10,20 +10,6 @@
 #include "wcstringutil.h"
 #include "wutil.h"
 
-// Whoof. Thread Sanitizer swallows signals and replays them at its leisure, at the point where
-// instrumented code makes certain blocking calls. But tsan cannot interrupt a signal call, so
-// if we're blocked in read() (like the topic monitor wants to be!), we'll never receive SIGCHLD
-// and so deadlock. So if tsan is enabled, we mark our fd as non-blocking (so reads will never
-// block) and use select() to poll it.
-#if defined(__has_feature)
-#if __has_feature(thread_sanitizer)
-#define TOPIC_MONITOR_TSAN_WORKAROUND
-#endif
-#endif
-#ifdef __SANITIZE_THREAD__
-#define TOPIC_MONITOR_TSAN_WORKAROUND
-#endif
-
 wcstring generation_list_t::describe() const {
     wcstring result;
     for (generation_t gen : this->as_array()) {
@@ -45,17 +31,23 @@ binary_semaphore_t::binary_semaphore_t() : sem_ok_(false) {
     sem_ok_ = (0 == sem_init(&sem_, 0, 0));
 #endif
     if (!sem_ok_) {
-        auto pipes = make_autoclose_pipes({});
+        auto pipes = make_autoclose_pipes();
         assert(pipes.has_value() && "Failed to make pubsub pipes");
         pipes_ = pipes.acquire();
 
-#ifdef TOPIC_MONITOR_TSAN_WORKAROUND
+        // Whoof. Thread Sanitizer swallows signals and replays them at its leisure, at the point
+        // where instrumented code makes certain blocking calls. But tsan cannot interrupt a signal
+        // call, so if we're blocked in read() (like the topic monitor wants to be!), we'll never
+        // receive SIGCHLD and so deadlock. So if tsan is enabled, we mark our fd as non-blocking
+        // (so reads will never block) and use select() to poll it.
+#ifdef FISH_TSAN_WORKAROUNDS
         DIE_ON_FAILURE(make_fd_nonblocking(pipes_.read.fd()));
 #endif
     }
 }
 
 binary_semaphore_t::~binary_semaphore_t() {
+    // We never use sem_t on Mac. The #ifdef avoids deprecation warnings.
 #ifndef __APPLE__
     if (sem_ok_) (void)sem_destroy(&sem_);
 #endif
@@ -92,21 +84,19 @@ void binary_semaphore_t::wait() {
         if (res < 0) die(L"sem_wait");
     } else {
         int fd = pipes_.read.fd();
-#ifdef TOPIC_MONITOR_TSAN_WORKAROUND
-        // Under tsan our notifying pipe is non-blocking, so we would busy-loop on the read() call
-        // until data is available (that is, fish would use 100% cpu while waiting for processes).
-        // The select prevents that.
-        fd_set fds;
-        FD_ZERO(&fds);
-        FD_SET(fd, &fds);
-        (void)select(fd + 1, &fds, nullptr, nullptr, nullptr /* timeout */);
-#endif
         // We must read exactly one byte.
         for (;;) {
+#ifdef FISH_TSAN_WORKAROUNDS
+            // Under tsan our notifying pipe is non-blocking, so we would busy-loop on the read()
+            // call until data is available (that is, fish would use 100% cpu while waiting for
+            // processes). The select prevents that.
+            (void)select_wrapper_t::is_fd_readable(fd, select_wrapper_t::kNoTimeout);
+#endif
             uint8_t ignored;
             auto amt = read(fd, &ignored, sizeof ignored);
             if (amt == 1) break;
-            if (amt < 0 && errno != EINTR) die(L"read");
+            // EAGAIN should only be returned in TSan case.
+            if (amt < 0 && errno != EINTR && errno != EAGAIN) die(L"read");
         }
     }
 }

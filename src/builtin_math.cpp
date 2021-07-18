@@ -43,7 +43,7 @@ static const struct woption long_options[] = {{L"scale", required_argument, null
                                               {nullptr, 0, nullptr, 0}};
 
 static int parse_cmd_opts(math_cmd_opts_t &opts, int *optind,  //!OCLINT(high ncss method)
-                          int argc, wchar_t **argv, parser_t &parser, io_streams_t &streams) {
+                          int argc, const wchar_t **argv, parser_t &parser, io_streams_t &streams) {
     const wchar_t *cmd = L"math";
     int opt;
     wgetopter_t w;
@@ -120,7 +120,10 @@ static const wchar_t *math_get_arg_stdin(wcstring *storage, const io_streams_t &
         char ch = '\0';
         long rc = read_blocked(streams.stdin_fd, &ch, 1);
 
-        if (rc < 0) return nullptr;  // failure
+        if (rc < 0) {  // error
+            wperror(L"read");
+            return nullptr;
+        }
 
         if (rc == 0) {  // EOF
             if (arg.empty()) return nullptr;
@@ -137,15 +140,17 @@ static const wchar_t *math_get_arg_stdin(wcstring *storage, const io_streams_t &
 }
 
 /// Return the next argument from argv.
-static const wchar_t *math_get_arg_argv(int *argidx, wchar_t **argv) {
+static const wchar_t *math_get_arg_argv(int *argidx, const wchar_t **argv) {
     return argv && argv[*argidx] ? argv[(*argidx)++] : nullptr;
 }
 
 /// Get the arguments from argv or stdin based on the execution context. This mimics how builtin
 /// `string` does it.
-static const wchar_t *math_get_arg(int *argidx, wchar_t **argv, wcstring *storage,
+static const wchar_t *math_get_arg(int *argidx, const wchar_t **argv, wcstring *storage,
                                    const io_streams_t &streams) {
     if (math_args_from_stdin(streams)) {
+        assert(streams.stdin_fd >= 0 &&
+               "stdin should not be closed since it is directly redirected");
         return math_get_arg_stdin(storage, streams);
     }
     return math_get_arg_argv(argidx, argv);
@@ -223,6 +228,15 @@ static int evaluate_expression(const wchar_t *cmd, const parser_t &parser, io_st
 
     int retval = STATUS_CMD_OK;
     te_error_t error;
+    // Switch locale while computing stuff.
+    // This means that the "." is always the radix character,
+    // so numbers work the same across locales.
+    //
+    // TODO: Technically this is only needed for *output* currently,
+    // because we already use wcstod_l while computing,
+    // but we can't have math print numbers that it won't then also read.
+    char *saved_locale = strdup(setlocale(LC_NUMERIC, nullptr));
+    setlocale(LC_NUMERIC, "C");
     double v = te_interp(expression.c_str(), &error);
 
     if (error.position == 0) {
@@ -252,12 +266,14 @@ static int evaluate_expression(const wchar_t *cmd, const parser_t &parser, io_st
         streams.err.append_format(L"%*ls%ls\n", error.position - 1, L" ", L"^");
         retval = STATUS_CMD_ERROR;
     }
+    setlocale(LC_NUMERIC, saved_locale);
+    free(saved_locale);
     return retval;
 }
 
 /// The math builtin evaluates math expressions.
-maybe_t<int> builtin_math(parser_t &parser, io_streams_t &streams, wchar_t **argv) {
-    wchar_t *cmd = argv[0];
+maybe_t<int> builtin_math(parser_t &parser, io_streams_t &streams, const wchar_t **argv) {
+    const wchar_t *cmd = argv[0];
     int argc = builtin_count_args(argv);
     math_cmd_opts_t opts;
     int optind;

@@ -411,6 +411,27 @@ string repeat -n3 -m20 foo
 string repeat -m4 foo
 # CHECK: foof
 
+string repeat -n 5 a b c
+# CHECK: aaaaa
+# CHECK: bbbbb
+# CHECK: ccccc
+
+string repeat -n 5 --max 4 123 456 789
+# CHECK: 1231
+# CHECK: 4564
+# CHECK: 7897
+
+string repeat -n 5 --max 4 123 '' 789
+# CHECK: 1231
+# CHECK:
+# CHECK: 7897
+
+# Historical string repeat behavior is no newline if no output.
+echo -n before
+string repeat -n 5 ''
+echo after
+# CHECK: beforeafter
+
 string repeat -n-1 foo; and echo "exit 0"
 # CHECKERR: string repeat: Invalid count value '-1'
 
@@ -646,6 +667,18 @@ string collect -N '' >/dev/null; and echo unexpected success; or echo expected f
 string collect \n\n >/dev/null; and echo unexpected success; or echo expected failure
 # CHECK: expected failure
 
+echo "foo"(true | string collect --allow-empty)"bar"
+# CHECK: foobar
+test -z (string collect)
+and echo Nothing
+# CHECK: Nothing
+test -n (string collect)
+and echo Something
+# CHECK: Something
+test -n (string collect -a)
+or echo No, actually nothing
+# CHECK: No, actually nothing
+
 # string collect in functions
 # This function outputs some newline-separated content, and some
 # explicitly un-separated content.
@@ -689,3 +722,36 @@ end
 # CHECKERR: checks/string.fish (line {{\d+}}): function: The name 'string' is reserved, and cannot be used as a function name
 # CHECKERR: function string
 # CHECKERR: ^
+
+string escape \x7F
+# CHECK: \x7f
+
+# This used to crash.
+string pad -w 8 he \eh
+# CHECK: he
+# CHECK: {{\x1bh}}
+
+string match -rg '(.*)fish' catfish
+# CHECK: cat
+string match -rg '(.*)fish' shellfish
+# CHECK: shell
+# An empty match
+string match -rg '(.*)fish' fish
+# No match at all
+string match -rg '(.*)fish' banana
+# Make sure it doesn't start matching something
+string match -r --groups-only '(.+)fish' fish
+echo $status
+# CHECK: 1
+# Multiple groups
+string match -r --groups-only '(.+)fish(.*)' catfishcolor
+# CHECK: cat
+# CHECK: color
+
+# Examples specifically called out in #6056.
+echo "foo bar baz" | string match -rg 'foo (bar) baz'
+# CHECK: bar
+echo "foo1x foo2x foo3x" | string match -arg 'foo(\d)x'
+# CHECK: 1
+# CHECK: 2
+# CHECK: 3

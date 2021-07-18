@@ -22,8 +22,7 @@
 
 /// The  source builtin, sometimes called `.`. Evaluates the contents of a file in the current
 /// context.
-maybe_t<int> builtin_source(parser_t &parser, io_streams_t &streams, wchar_t **argv) {
-    ASSERT_IS_MAIN_THREAD();
+maybe_t<int> builtin_source(parser_t &parser, io_streams_t &streams, const wchar_t **argv) {
     const wchar_t *cmd = argv[0];
     int argc = builtin_count_args(argv);
     help_only_cmd_opts_t opts;
@@ -47,6 +46,10 @@ maybe_t<int> builtin_source(parser_t &parser, io_streams_t &streams, wchar_t **a
     const wchar_t *fn, *fn_intern;
 
     if (argc == optind || std::wcscmp(argv[optind], L"-") == 0) {
+        if (streams.stdin_fd < 0) {
+            streams.err.append_format(_(L"%ls: stdin is closed\n"), cmd);
+            return STATUS_CMD_ERROR;
+        }
         // Either a bare `source` which means to implicitly read from stdin or an explicit `-`.
         if (argc == optind && isatty(streams.stdin_fd)) {
             // Don't implicitly read from the terminal.
@@ -58,22 +61,25 @@ maybe_t<int> builtin_source(parser_t &parser, io_streams_t &streams, wchar_t **a
     } else {
         opened_fd = autoclose_fd_t(wopen_cloexec(argv[optind], O_RDONLY));
         if (!opened_fd.valid()) {
+            wcstring esc = escape_string(argv[optind], ESCAPE_ALL);
             streams.err.append_format(_(L"%ls: Error encountered while sourcing file '%ls':\n"),
-                                      cmd, argv[optind]);
+                                      cmd, esc.c_str());
             builtin_wperror(cmd, streams);
             return STATUS_CMD_ERROR;
         }
 
         fd = opened_fd.fd();
         if (fstat(fd, &buf) == -1) {
+            wcstring esc = escape_string(argv[optind], ESCAPE_ALL);
             streams.err.append_format(_(L"%ls: Error encountered while sourcing file '%ls':\n"),
-                                      cmd, argv[optind]);
+                                      cmd, esc.c_str());
             builtin_wperror(L"source", streams);
             return STATUS_CMD_ERROR;
         }
 
         if (!S_ISREG(buf.st_mode)) {
-            streams.err.append_format(_(L"%ls: '%ls' is not a file\n"), cmd, argv[optind]);
+            wcstring esc = escape_string(argv[optind], ESCAPE_ALL);
+            streams.err.append_format(_(L"%ls: '%ls' is not a file\n"), cmd, esc.c_str());
             return STATUS_CMD_ERROR;
         }
 
@@ -85,10 +91,14 @@ maybe_t<int> builtin_source(parser_t &parser, io_streams_t &streams, wchar_t **a
     auto &ld = parser.libdata();
     scoped_push<const wchar_t *> filename_push{&ld.current_filename, fn_intern};
 
+    // Construct argv from our null-terminated list.
     // This is slightly subtle. If this is a bare `source` with no args then `argv + optind` already
     // points to the end of argv. Otherwise we want to skip the file name to get to the args if any.
-    wcstring_list_t argv_list =
-        null_terminated_array_t<wchar_t>::to_list(argv + optind + (argc == optind ? 0 : 1));
+    wcstring_list_t argv_list;
+    const wchar_t *const *remaining_args = argv + optind + (argc == optind ? 0 : 1);
+    for (size_t i = 0, len = null_terminated_array_length(remaining_args); i < len; i++) {
+        argv_list.push_back(remaining_args[i]);
+    }
     parser.vars().set_argv(std::move(argv_list));
 
     retval = reader_read(parser, fd, streams.io_chain ? *streams.io_chain : io_chain_t());
@@ -96,8 +106,9 @@ maybe_t<int> builtin_source(parser_t &parser, io_streams_t &streams, wchar_t **a
     parser.pop_block(sb);
 
     if (retval != STATUS_CMD_OK) {
+        wcstring esc = escape_string(fn_intern, ESCAPE_ALL);
         streams.err.append_format(_(L"%ls: Error while reading file '%ls'\n"), cmd,
-                                  fn_intern == intern_static(L"-") ? L"<stdin>" : fn_intern);
+                                  fn_intern == intern_static(L"-") ? L"<stdin>" : esc.c_str());
     } else {
         retval = parser.get_last_status();
     }

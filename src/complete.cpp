@@ -196,7 +196,7 @@ static complete_flags_t resolve_auto_space(const wcstring &comp, complete_flags_
     if (flags & COMPLETE_AUTO_SPACE) {
         new_flags &= ~COMPLETE_AUTO_SPACE;
         size_t len = comp.size();
-        if (len > 0 && (std::wcschr(L"/=@:.,", comp.at(len - 1)) != nullptr))
+        if (len > 0 && (std::wcschr(L"/=@:.,-", comp.at(len - 1)) != nullptr))
             new_flags |= COMPLETE_NO_SPACE;
     }
     return new_flags;
@@ -479,7 +479,6 @@ bool completer_t::condition_test(const wcstring &condition) {
         return false;
     }
 
-    ASSERT_IS_MAIN_THREAD();
     bool test_res;
     auto cached_entry = condition_cache.find(condition);
     if (cached_entry == condition_cache.end()) {
@@ -573,9 +572,13 @@ void complete_remove_all(const wcstring &cmd, bool cmd_is_path) {
 /// Find the full path and commandname from a command string 'str'.
 static void parse_cmd_string(const wcstring &str, wcstring *path, wcstring *cmd,
                              const environment_t &vars) {
-    if (!path_get_path(str, path, vars)) {
-        /// Use the empty string as the 'path' for commands that can not be found.
-        path->clear();
+    bool found = path_get_path(str, path, vars);
+    // If the command was not found, 'path' is the empty string.
+    // Resolve commands that use relative paths because we compare full paths with "complete -p".
+    if (found && !str.empty() && str.at(0) != L'/') {
+        if (auto full_path = wrealpath(*path)) {
+            path->assign(full_path.acquire());
+        }
     }
 
     // Make sure the path is not included in the command.
@@ -713,14 +716,7 @@ void completer_t::complete_cmd_desc(const wcstring &str) {
 /// Returns a description for the specified function, or an empty string if none.
 static wcstring complete_function_desc(const wcstring &fn) {
     wcstring result;
-    bool has_description = function_get_desc(fn, result);
-    if (!has_description) {
-        function_get_definition(fn, result);
-        // A completion description is a single line.
-        for (wchar_t &c : result) {
-            if (c == L'\n') c = L' ';
-        }
-    }
+    function_get_desc(fn, result);
     return result;
 }
 
@@ -1067,6 +1063,7 @@ bool completer_t::complete_param_for_command(const wcstring &cmd_orig, const wcs
             if (!this->condition_test(o.condition)) continue;
             if (o.option.empty()) {
                 use_files = use_files && (!(o.result_mode.no_files));
+                has_force = has_force || o.result_mode.force_files;
                 complete_from_args(str, o.comp, o.localized_desc(), o.flags);
             }
 
@@ -1151,7 +1148,9 @@ bool completer_t::complete_param_for_command(const wcstring &cmd_orig, const wcs
         }
     }
 
-    if (!(has_force || use_files)) {
+    if (has_force) {
+        *out_do_file = true;
+    } else if (!use_files) {
         *out_do_file = false;
     }
     return true;
@@ -1252,8 +1251,8 @@ bool completer_t::complete_variable(const wcstring &str, size_t start_offset) {
                 // $history can be huge, don't put all of it in the completion description; see
                 // #6288.
                 if (env_name == L"history") {
-                    history_t *history =
-                        &history_t::history_with_name(history_session_id(ctx.vars));
+                    std::shared_ptr<history_t> history =
+                        history_t::with_name(history_session_id(ctx.vars));
                     for (size_t i = 1; i < history->size() && desc.size() < 64; i++) {
                         if (i > 1) desc += L' ';
                         desc += expand_escape_string(history->item_at_index(i).str());
@@ -1743,7 +1742,8 @@ void completer_t::perform_for_commandline(wcstring cmdline) {
         }
 
         // Hack. If we're cd, handle it specially (issue #1059, others).
-        handle_as_special_cd = (unesc_command == L"cd");
+        handle_as_special_cd =
+            (unesc_command == L"cd") || arg_data.visited_wrapped_commands.count(L"cd");
     }
 
     // Maybe apply variable assignments.

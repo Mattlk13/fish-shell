@@ -39,6 +39,16 @@
 #define OS_IS_CYGWIN
 #endif
 
+// Check if Thread Sanitizer is enabled.
+#if defined(__has_feature)
+#if __has_feature(thread_sanitizer)
+#define FISH_TSAN_WORKAROUNDS 1
+#endif
+#endif
+#ifdef __SANITIZE_THREAD__
+#define FISH_TSAN_WORKAROUNDS 1
+#endif
+
 // Common string type.
 typedef std::wstring wcstring;
 typedef std::vector<wcstring> wcstring_list_t;
@@ -146,30 +156,12 @@ enum {
 };
 typedef unsigned int escape_flags_t;
 
-/// Issue a debug message with printf-style string formating and automatic line breaking. The string
-/// will begin with the string \c program_name, followed by a colon and a whitespace.
-///
-/// Because debug is often called to tell the user about an error, before using wperror to give a
-/// specific error message, debug will never ever modify the value of errno.
-///
-/// \param level the priority of the message. Lower number means higher priority. Messages with a
-/// priority_number higher than \c debug_level will be ignored..
-/// \param msg the message format string.
-///
-/// Example:
-///
-/// <code>debug( 1, L"Pi = %.3f", M_PI );</code>
-///
-/// will print the string 'fish: Pi = 3.141', given that debug_level is 1 or higher, and that
-/// program_name is 'fish'.
-[[gnu::noinline, gnu::format(printf, 2, 3)]] void debug_impl(int level, const char *msg, ...);
-[[gnu::noinline]] void debug_impl(int level, const wchar_t *msg, ...);
+/// A user-visible job ID.
+using job_id_t = int;
 
-/// The verbosity level of fish. If a call to debug has a severity level higher than \c debug_level,
-/// it will not be printed.
-extern std::atomic<int> debug_level;
-
-inline bool should_debug(int level) { return level <= debug_level.load(std::memory_order_relaxed); }
+/// The non user-visible, never-recycled job ID.
+/// Every job has a unique positive value for this.
+using internal_job_id_t = uint64_t;
 
 /// Exits without invoking destructors (via _exit), useful for code after fork.
 [[noreturn]] void exit_without_destructors(int code);
@@ -200,6 +192,10 @@ extern const wchar_t *program_name;
 
 /// Set to false if it's been determined we can't trust the last modified timestamp on the tty.
 extern const bool has_working_tty_timestamps;
+
+/// A global, empty string. This is useful for functions which wish to return a reference to an
+/// empty string.
+extern const wcstring g_empty_string;
 
 // Pause for input, then exit the program. If supported, print a backtrace first.
 // The `return` will never be run  but silences oclint warnings. Especially when this is called
@@ -291,6 +287,10 @@ wcstring str2wcstring(const std::string &in, size_t len);
 /// This function decodes illegal character sequences in a reversible way using the private use
 /// area.
 std::string wcs2string(const wcstring &input);
+std::string wcs2string(const wchar_t *in, size_t len);
+
+/// Like wcs2string, but appends to \p receiver instead of returning a new string.
+void wcs2string_appending(const wchar_t *in, size_t len, std::string *receiver);
 
 // Check if we are running in the test mode, where we should suppress error output
 #define TESTS_PROGRAM_NAME L"(ignore)"
@@ -306,24 +306,14 @@ void assert_is_background_thread(const char *who);
 
 /// Useful macro for asserting that a lock is locked. This doesn't check whether this thread locked
 /// it, which it would be nice if it did, but here it is anyways.
-void assert_is_locked(void *mutex, const char *who, const char *caller);
-#define ASSERT_IS_LOCKED(x) assert_is_locked(reinterpret_cast<void *>(&x), #x, __FUNCTION__)
+void assert_is_locked(std::mutex &mutex, const char *who, const char *caller);
+#define ASSERT_IS_LOCKED(m) assert_is_locked(m, #m, __FUNCTION__)
 
 /// Format the specified size (in bytes, kilobytes, etc.) into the specified stringbuffer.
 wcstring format_size(long long sz);
 
 /// Version of format_size that does not allocate memory.
 void format_size_safe(char buff[128], unsigned long long sz);
-
-/// Our crappier versions of debug which is guaranteed to not allocate any memory, or do anything
-/// other than call write(). This is useful after a call to fork() with threads.
-void debug_safe(int level, const char *msg, const char *param1 = nullptr,
-                const char *param2 = nullptr, const char *param3 = nullptr,
-                const char *param4 = nullptr, const char *param5 = nullptr,
-                const char *param6 = nullptr, const char *param7 = nullptr,
-                const char *param8 = nullptr, const char *param9 = nullptr,
-                const char *param10 = nullptr, const char *param11 = nullptr,
-                const char *param12 = nullptr);
 
 /// Writes out a long safely.
 void format_long_safe(char buff[64], long val);
@@ -333,8 +323,7 @@ void format_ullong_safe(wchar_t buff[64], unsigned long long val);
 /// "Narrows" a wide character string. This just grabs any ASCII characters and trunactes.
 void narrow_string_safe(char buff[64], const wchar_t *s);
 
-typedef std::lock_guard<std::mutex> scoped_lock;
-typedef std::lock_guard<std::recursive_mutex> scoped_rlock;
+using scoped_lock = std::lock_guard<std::mutex>;
 
 // An object wrapping a scoped lock and a value
 // This is returned from owning_lock.acquire()
@@ -437,50 +426,6 @@ class scoped_push {
     }
 };
 
-/// A helper class for managing and automatically closing a file descriptor.
-class autoclose_fd_t {
-    int fd_;
-
-   public:
-    // Closes the fd if not already closed.
-    void close();
-
-    // Returns the fd.
-    int fd() const { return fd_; }
-
-    // Returns the fd, transferring ownership to the caller.
-    int acquire() {
-        int temp = fd_;
-        fd_ = -1;
-        return temp;
-    }
-
-    // Resets to a new fd, taking ownership.
-    void reset(int fd) {
-        if (fd == fd_) return;
-        close();
-        fd_ = fd;
-    }
-
-    // \return if this has a valid fd.
-    bool valid() const { return fd_ >= 0; }
-
-    autoclose_fd_t(const autoclose_fd_t &) = delete;
-    void operator=(const autoclose_fd_t &) = delete;
-    autoclose_fd_t(autoclose_fd_t &&rhs) : fd_(rhs.fd_) { rhs.fd_ = -1; }
-
-    void operator=(autoclose_fd_t &&rhs) {
-        close();
-        std::swap(this->fd_, rhs.fd_);
-    }
-
-    explicit autoclose_fd_t(int fd = -1) : fd_(fd) {}
-    ~autoclose_fd_t() { close(); }
-};
-
-/// Close a file descriptor \p fd, retrying on EINTR.
-void exec_close(int fd);
-
 wcstring format_string(const wchar_t *format, ...);
 wcstring vformat_string(const wchar_t *format, va_list va_orig);
 void append_format(wcstring &str, const wchar_t *format, ...);
@@ -496,11 +441,11 @@ std::unique_ptr<T> make_unique(Args &&...args) {
 }
 #endif
 
-/// This functions returns the end of the quoted substring beginning at \c in. The type of quoting
-/// character is detemrined by examining \c in. Returns 0 on error.
+/// This functions returns the end of the quoted substring beginning at \c pos. Returns 0 on error.
 ///
-/// \param in the position of the opening quote.
-wchar_t *quote_end(const wchar_t *pos);
+/// \param pos the position of the opening quote.
+/// \param quote the quote to use, usually pointed to by \c pos.
+const wchar_t *quote_end(const wchar_t *pos, wchar_t quote);
 
 /// This function should be called after calling `setlocale()` to perform fish specific locale
 /// initialization.
@@ -527,6 +472,10 @@ wcstring escape_string(const wchar_t *in, escape_flags_t flags,
                        escape_string_style_t style = STRING_STYLE_SCRIPT);
 wcstring escape_string(const wcstring &in, escape_flags_t flags,
                        escape_string_style_t style = STRING_STYLE_SCRIPT);
+
+/// Escape a string so that it may be inserted into a double-quoted string.
+/// This permits ownership transfer.
+wcstring escape_string_for_double_quotes(wcstring in);
 
 /// \return a string representation suitable for debugging (not for presenting to the user). This
 /// replaces non-ASCII characters with either tokens like <BRACE_SEP> or <\xfdd7>. No other escapes
@@ -668,6 +617,7 @@ std::string get_path_to_tmp_dir();
 
 bool valid_var_name_char(wchar_t chr);
 bool valid_var_name(const wcstring &str);
+bool valid_var_name(const wchar_t *str);
 bool valid_func_name(const wcstring &str);
 
 // Return values (`$status` values for fish scripts) for various situations.
@@ -683,13 +633,9 @@ enum {
 
     /// The status code used when a command was not found.
     STATUS_CMD_UNKNOWN = 127,
-    /// TODO: Figure out why we have two distinct failure codes for when an external command cannot
-    /// be run.
-    ///
+
     /// The status code used when an external command can not be run.
     STATUS_NOT_EXECUTABLE = 126,
-    /// The status code used when an external command can not be run.
-    STATUS_EXEC_FAIL = 125,
 
     /// The status code used when a wildcard had no matches.
     STATUS_UNMATCHED_WILDCARD = 124,
@@ -745,5 +691,32 @@ struct cleanup_t {
 };
 
 bool is_console_session();
+
+/// Compile-time agnostic-size strcmp/wcscmp implementation. Unicode-unaware.
+template <typename T>
+constexpr ssize_t const_strcmp(const T *lhs, const T *rhs) {
+    return (*lhs == *rhs) ? (*lhs == 0 ? 0 : const_strcmp(lhs + 1, rhs + 1))
+                          : (*lhs > *rhs ? 1 : -1);
+}
+
+/// Compile-time agnostic-size strlen/wcslen implementation. Unicode-unaware.
+template <typename T, size_t N>
+constexpr size_t const_strlen(const T (&val)[N], size_t last_checked_idx = N,
+                              size_t first_nul_idx = N) {
+    // Assume there's a nul char at the end (index N) but there may be one before that that.
+    return last_checked_idx == 0
+               ? first_nul_idx
+               : const_strlen(val, last_checked_idx - 1,
+                              val[last_checked_idx - 1] ? first_nul_idx : last_checked_idx - 1);
+}
+
+/// \return true if the array \p vals is sorted by its name property.
+template <typename T, size_t N>
+constexpr bool is_sorted_by_name(const T (&vals)[N], size_t idx = 1) {
+    return idx >= N ? true
+                    : (const_strcmp(vals[idx - 1].name, vals[idx].name) <= 0 &&
+                       is_sorted_by_name(vals, idx + 1));
+}
+#define ASSERT_SORTED_BY_NAME(x) static_assert(is_sorted_by_name(x), #x " not sorted by name")
 
 #endif  // FISH_COMMON_H

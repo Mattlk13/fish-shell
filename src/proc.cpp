@@ -31,6 +31,7 @@
 #endif
 #include <sys/time.h>  // IWYU pragma: keep
 #include <sys/types.h>
+#include <sys/wait.h>
 
 #include <algorithm>  // IWYU pragma: keep
 #include <memory>
@@ -133,12 +134,7 @@ bool job_t::should_report_process_exits() const {
     }
 
     // Return whether we have an external process.
-    for (const auto &p : this->processes) {
-        if (p->type == process_type_t::external) {
-            return true;
-        }
-    }
-    return false;
+    return this->has_external_proc();
 }
 
 bool job_t::job_chain_is_fully_constructed() const { return group->is_root_constructed(); }
@@ -271,8 +267,12 @@ void process_t::check_generations_before_launch() {
 }
 
 void process_t::mark_aborted_before_launch() {
-    completed = true;
-    status = proc_status_t::from_exit_code(EXIT_FAILURE);
+    this->completed = true;
+    // The status may have already been set to e.g. STATUS_NOT_EXECUTABLE.
+    // Only stomp a successful status.
+    if (this->status.is_success()) {
+        this->status = proc_status_t::from_exit_code(EXIT_FAILURE);
+    }
 }
 
 bool process_t::is_internal() const {
@@ -293,6 +293,16 @@ bool process_t::is_internal() const {
            "process_t::is_internal: Total logic failure, universe is broken. Please replace "
            "universe and retry.");
     return true;
+}
+
+wait_handle_ref_t process_t::get_wait_handle(bool create) {
+    if (type != process_type_t::external || pid <= 0) {
+        return nullptr;
+    }
+    if (!wait_handle_ && create) {
+        wait_handle_ = std::make_shared<wait_handle_t>(this->pid, wbasename(this->actual_cmd));
+    }
+    return wait_handle_;
 }
 
 static uint64_t next_internal_job_id() {
@@ -333,7 +343,7 @@ bool job_t::has_external_proc() const {
 /// we exit. Poll these from time-to-time to prevent zombie processes from happening (#5342).
 static owning_lock<std::vector<pid_t>> s_disowned_pids;
 
-void add_disowned_job(job_t *j) {
+void add_disowned_job(const job_t *j) {
     if (j == nullptr) return;
 
     // Never add our own (or an invalid) pgid as it is not unique to only
@@ -476,7 +486,7 @@ static void process_mark_finished_children(parser_t &parser, bool block_ok) {
 }
 
 /// Call the fish_job_summary function with the given args.
-static void print_job_summary(parser_t &parser, const wcstring_list_t &args) {
+static void call_job_summary(parser_t &parser, const wcstring_list_t &args) {
     wcstring buffer = wcstring(L"fish_job_summary");
     for (const wcstring &arg : args) {
         buffer.push_back(L' ');
@@ -498,23 +508,12 @@ static void print_job_summary(parser_t &parser, const wcstring_list_t &args) {
 using job_status_t = enum { JOB_STOPPED, JOB_ENDED };
 static void print_job_status(parser_t &parser, const job_t *j, job_status_t status) {
     wcstring_list_t args = {
-        format_string(L"%d", j->job_id()),
-        format_string(L"%d", j->is_foreground()),
+        to_string(j->job_id()),
+        to_string(static_cast<int>(j->is_foreground())),
         j->command(),
         status == JOB_STOPPED ? L"STOPPED" : L"ENDED",
     };
-    print_job_summary(parser, args);
-}
-
-event_t proc_create_event(const wchar_t *msg, event_type_t type, pid_t pid, int status) {
-    event_t event{type};
-    event.desc.param1.pid = pid;
-
-    event.arguments.reserve(3);
-    event.arguments.push_back(msg);
-    event.arguments.push_back(to_string(pid));
-    event.arguments.push_back(to_string(status));
-    return event;
+    call_job_summary(parser, args);
 }
 
 /// Remove all disowned jobs whose job chain is fully constructed (that is, do not erase disowned
@@ -544,8 +543,7 @@ static bool try_clean_process_in_job(parser_t &parser, process_t *p, job_t *j,
 
     // Add an exit event if the process did not come from a job handler.
     if (!j->from_event_handler()) {
-        exit_events->push_back(proc_create_event(L"PROCESS_EXIT", event_type_t::exit, p->pid,
-                                                 s.normal_exited() ? s.exit_code() : -1));
+        exit_events->push_back(event_t::process_exit(p->pid, s.status_value()));
     }
 
     // Ignore SIGPIPE. We issue it ourselves to the pipe writer when the pipe reader dies.
@@ -564,16 +562,16 @@ static bool try_clean_process_in_job(parser_t &parser, process_t *p, job_t *j,
 
     wcstring_list_t args;
     args.reserve(proc_is_job ? 5 : 7);
-    args.push_back(format_string(L"%d", j->job_id()));
-    args.push_back(format_string(L"%d", j->is_foreground()));
+    args.push_back(to_string(j->job_id()));
+    args.push_back(to_string(static_cast<int>(j->is_foreground())));
     args.push_back(j->command());
     args.push_back(sig2wcs(s.signal_code()));
     args.push_back(signal_get_desc(s.signal_code()));
     if (!proc_is_job) {
-        args.push_back(format_string(L"%d", p->pid));
+        args.push_back(to_string(p->pid));
         args.push_back(p->argv0());
     }
-    print_job_summary(parser, args);
+    call_job_summary(parser, args);
     // Clear status so it is not reported more than once.
     // TODO: this seems like a clumsy way to ensure that.
     p->status = proc_status_t::from_exit_code(0);
@@ -594,6 +592,28 @@ static bool job_wants_message(const shared_ptr<job_t> &j) {
     if (j->is_foreground()) return false;
 
     return true;
+}
+
+/// Given that a job has completed, check if it may be wait'ed on; if so add it to the wait handle
+/// store. Then mark all wait handles as complete.
+static void save_wait_handle_for_completed_job(const shared_ptr<job_t> &job,
+                                               wait_handle_store_t &store) {
+    assert(job && job->is_completed() && "Job null or not completed");
+    // Are we a background job?
+    if (!job->is_foreground()) {
+        for (auto &proc : job->processes) {
+            store.add(proc->get_wait_handle(true));
+        }
+    }
+
+    // Mark all wait handles as complete (but don't create just for this).
+    for (auto &proc : job->processes) {
+        if (wait_handle_ref_t wh = proc->get_wait_handle(false /* create */)) {
+            wh->status = proc->status.status_value();
+            wh->internal_job_id = job->internal_job_id;
+            wh->completed = true;
+        }
+    }
 }
 
 /// Remove completed jobs from the job list, printing status messages as appropriate.
@@ -649,27 +669,36 @@ static bool process_clean_after_marking(parser_t &parser, bool allow_interactive
             printed = true;
         }
 
-        // Prepare events for completed jobs, except for jobs that themselves came from event
-        // handlers.
-        if (!j->from_event_handler() && j->is_completed()) {
-            if (j->should_report_process_exits()) {
-                pid_t pgid = *j->get_pgid();
-                exit_events.push_back(proc_create_event(L"JOB_EXIT", event_type_t::exit, -pgid, 0));
+        // Prepare events for completed jobs
+        if (j->is_completed()) {
+            // If this job already came from an event handler,
+            // don't create an event or it's easy to get an infinite loop.
+            if (!j->from_event_handler() && j->should_report_process_exits()) {
+                if (auto last_pid = j->get_last_pid()) {
+                    exit_events.push_back(event_t::job_exit(*last_pid, j->internal_job_id));
+                }
             }
-            exit_events.push_back(
-                proc_create_event(L"JOB_EXIT", event_type_t::caller_exit, j->job_id(), 0));
-            exit_events.back().desc.param1.caller_id = j->internal_job_id;
+            // Caller exit events we still create, which anecdotally fixes `source (thing | psub)`
+            // inside event handlers. This seems benign since this event is barely used (basically
+            // only psub), and it seems hard to construct an infinite loop with it.
+            exit_events.push_back(event_t::caller_exit(j->internal_job_id, j->job_id()));
         }
     }
 
     // Remove completed jobs.
     // Do this before calling out to user code in the event handler below, to ensure an event
     // handler doesn't remove jobs on our behalf.
-    auto should_remove = [&](const shared_ptr<job_t> &j) {
-        return should_process_job(j) && j->is_completed();
-    };
     auto &jobs = parser.jobs();
-    jobs.erase(std::remove_if(jobs.begin(), jobs.end(), should_remove), jobs.end());
+    for (auto iter = jobs.begin(); iter != jobs.end();) {
+        const shared_ptr<job_t> &j = *iter;
+        if (should_process_job(j) && j->is_completed()) {
+            // If this job finished in the background, we have to remember to wait on it.
+            save_wait_handle_for_completed_job(j, parser.get_wait_handles());
+            iter = jobs.erase(iter);
+        } else {
+            ++iter;
+        }
+    }
 
     // Post pending exit events.
     for (const auto &evt : exit_events) {
@@ -685,17 +714,13 @@ static bool process_clean_after_marking(parser_t &parser, bool allow_interactive
 
 bool job_reap(parser_t &parser, bool allow_interactive) {
     ASSERT_IS_MAIN_THREAD();
-    process_mark_finished_children(parser, false);
+    // Early out for the common case that there are no jobs.
+    if (parser.jobs().empty()) {
+        return false;
+    }
 
-    // Preserve the exit status.
-    auto saved_statuses = parser.get_last_statuses();
-
-    bool printed = process_clean_after_marking(parser, allow_interactive);
-
-    // Restore the exit status.
-    parser.set_last_statuses(std::move(saved_statuses));
-
-    return printed;
+    process_mark_finished_children(parser, false /* not block_ok */);
+    return process_clean_after_marking(parser, allow_interactive);
 }
 
 /// Get the CPU time for the specified process.
@@ -929,6 +954,14 @@ static bool terminal_return_from_job_group(job_group_t *jg) {
 bool job_t::is_foreground() const { return group->is_foreground(); }
 
 maybe_t<pid_t> job_t::get_pgid() const { return group->get_pgid(); }
+
+maybe_t<pid_t> job_t::get_last_pid() const {
+    for (auto iter = processes.rbegin(); iter != processes.rend(); ++iter) {
+        const process_t *proc = iter->get();
+        if (proc->pid > 0) return proc->pid;
+    }
+    return none();
+}
 
 job_id_t job_t::job_id() const { return group->get_id(); }
 

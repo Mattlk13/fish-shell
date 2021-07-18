@@ -20,7 +20,7 @@ struct builtin_data_t {
     // Name of the builtin.
     const wchar_t *name;
     // Function pointer to the builtin implementation.
-    maybe_t<int> (*func)(parser_t &parser, io_streams_t &streams, wchar_t **argv);
+    maybe_t<int> (*func)(parser_t &parser, io_streams_t &streams, const wchar_t **argv);
     // Description of what the builtin does.
     const wchar_t *desc;
 
@@ -31,10 +31,13 @@ struct builtin_data_t {
 /// The default prompt for the read command.
 #define DEFAULT_READ_PROMPT L"set_color green; echo -n read; set_color normal; echo -n \"> \""
 
-enum { COMMAND_NOT_BUILTIN, BUILTIN_REGULAR, BUILTIN_FUNCTION };
-
 /// Error message on missing argument.
 #define BUILTIN_ERR_MISSING _(L"%ls: Expected argument for option %ls\n")
+
+/// Error message on missing man page.
+#define BUILTIN_ERR_MISSING_HELP                                                                  \
+    _(L"fish: Missing man page for '%ls'. Did you install the documentation?\n`help '%ls'` will " \
+      L"open the online version.\n")
 
 /// Error message on invalid combination of options.
 #define BUILTIN_ERR_COMBO _(L"%ls: Invalid combination of options\n")
@@ -81,7 +84,7 @@ enum { COMMAND_NOT_BUILTIN, BUILTIN_REGULAR, BUILTIN_FUNCTION };
 void builtin_init();
 bool builtin_exists(const wcstring &cmd);
 
-proc_status_t builtin_run(parser_t &parser, wchar_t **argv, io_streams_t &streams);
+proc_status_t builtin_run(parser_t &parser, const wcstring_list_t &argv, io_streams_t &streams);
 
 wcstring_list_t builtin_get_names();
 void builtin_get_names(completion_list_t *list);
@@ -106,6 +109,6 @@ void builtin_wperror(const wchar_t *s, io_streams_t &streams);
 struct help_only_cmd_opts_t {
     bool print_help = false;
 };
-int parse_help_only_cmd_opts(help_only_cmd_opts_t &opts, int *optind, int argc, wchar_t **argv,
-                             parser_t &parser, io_streams_t &streams);
+int parse_help_only_cmd_opts(help_only_cmd_opts_t &opts, int *optind, int argc,
+                             const wchar_t **argv, parser_t &parser, io_streams_t &streams);
 #endif

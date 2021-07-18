@@ -19,7 +19,7 @@ class outputter_t {
     std::string contents_;
 
     /// Count of how many outstanding begin_buffering() calls there are.
-    uint32_t bufferCount_{0};
+    uint32_t buffer_count_{0};
 
     /// fd to output to.
     int fd_{-1};
@@ -32,12 +32,20 @@ class outputter_t {
     bool was_dim = false;
     bool was_reverse = false;
 
+    void reset_modes() {
+        was_bold = false;
+        was_underline = false;
+        was_italics = false;
+        was_dim = false;
+        was_reverse = false;
+    }
+
     /// Construct an outputter which outputs to a given fd.
     explicit outputter_t(int fd) : fd_(fd) {}
 
     /// Flush output, if we have a set fd and our buffering count is 0.
     void maybe_flush() {
-        if (fd_ >= 0 && bufferCount_ == 0) flush_to(fd_);
+        if (fd_ >= 0 && buffer_count_ == 0) flush_to(fd_);
     }
 
    public:
@@ -51,16 +59,19 @@ class outputter_t {
     void set_color(rgb_color_t c, rgb_color_t c2);
 
     /// Write a wide character to the receiver.
-    int writech(wint_t ch);
+    void writech(wchar_t ch) { writestr(&ch, 1); }
 
     /// Write a NUL-terminated wide character string to the receiver.
-    void writestr(const wchar_t *str);
+    void writestr(const wchar_t *str) { writestr(str, wcslen(str)); }
 
     /// Write a wide character string to the receiver.
-    void writestr(const wcstring &str) { writestr(str.c_str()); }
+    void writestr(const wcstring &str) { writestr(str.data(), str.size()); }
 
     /// Write the given terminfo string to the receiver, like tputs().
     int term_puts(const char *str, int affcnt);
+
+    /// Write a wide string of the given length.
+    void writestr(const wchar_t *str, size_t len);
 
     /// Write a narrow string of the given length.
     void writestr(const char *str, size_t len) {
@@ -86,14 +97,14 @@ class outputter_t {
     /// Begins buffering. Output will not be automatically flushed until a corresponding
     /// end_buffering() call.
     void begin_buffering() {
-        bufferCount_++;
-        assert(bufferCount_ > 0 && "bufferCount_ overflow");
+        buffer_count_++;
+        assert(buffer_count_ > 0 && "bufferCount_ overflow");
     }
 
     /// Balance a begin_buffering() call.
     void end_buffering() {
-        assert(bufferCount_ > 0 && "bufferCount_ underflow");
-        bufferCount_--;
+        assert(buffer_count_ > 0 && "bufferCount_ underflow");
+        buffer_count_--;
         maybe_flush();
     }
 

@@ -1,10 +1,6 @@
 name: C/C++ CI
 
-on:
-  push:
-    branches: [ master ]
-  pull_request:
-    branches: [ master ]
+on: [push, pull_request]
 
 jobs:
   ubuntu:
@@ -15,7 +11,7 @@ jobs:
     - uses: actions/checkout@v2
     - name: Install deps
       run: |
-        sudo apt install gettext libncurses5-dev libpcre2-dev python3-pip
+        sudo apt install gettext libncurses5-dev libpcre2-dev python3-pip tmux
         sudo pip3 install pexpect
     - name: cmake
       env:
@@ -40,7 +36,7 @@ jobs:
     - name: Install deps
       run: |
         sudo apt update
-        sudo apt install gettext lib32ncurses5-dev python3-pip g++-multilib
+        sudo apt install gettext lib32ncurses5-dev python3-pip g++-multilib tmux
         sudo pip3 install pexpect
     - name: cmake
       env:
@@ -48,7 +44,7 @@ jobs:
           CFLAGS: "-m32"
       run: |
         mkdir build && cd build
-        cmake ..
+        cmake -DFISH_USE_SYSTEM_PCRE2=OFF ..
     - name: make
       run: |
         make
@@ -64,7 +60,7 @@ jobs:
     - uses: actions/checkout@v2
     - name: Install deps
       run: |
-        sudo apt install gettext libncurses5-dev libpcre2-dev python3-pip
+        sudo apt install gettext libncurses5-dev libpcre2-dev python3-pip tmux
         sudo pip3 install pexpect
     - name: cmake
       env:
@@ -72,7 +68,7 @@ jobs:
           CXX: clang++
           CXXFLAGS: "-fno-omit-frame-pointer -fsanitize=undefined -fsanitize=address"
           ASAN_OPTIONS: check_initialization_order=1:detect_stack_use_after_return=1:detect_leaks=1
-          UBSAN_OPTIONS: print_stacktrace=1:report_error_type=1:suppressions=$TRAVIS_BUILD_DIR/build_tools/ubsan.blacklist
+          UBSAN_OPTIONS: print_stacktrace=1:report_error_type=1
       run: |
         mkdir build && cd build
         cmake ..
@@ -91,7 +87,7 @@ jobs:
     - uses: actions/checkout@v2
     - name: Install deps
       run: |
-        sudo apt install gettext libncurses5-dev libpcre2-dev python3-pip
+        sudo apt install gettext libncurses5-dev libpcre2-dev python3-pip tmux
         sudo pip3 install pexpect
     - name: cmake
       env:
@@ -116,8 +112,8 @@ jobs:
     - uses: actions/checkout@v2
     - name: Install deps
       run: |
-        brew install python3
         sudo pip3 install pexpect
+        brew install tmux
     - name: cmake
       run: |
         mkdir build && cd build

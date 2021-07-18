@@ -15,7 +15,7 @@
 #include "wutil.h"  // IWYU pragma: keep
 
 /// Implementation of eval builtin.
-maybe_t<int> builtin_eval(parser_t &parser, io_streams_t &streams, wchar_t **argv) {
+maybe_t<int> builtin_eval(parser_t &parser, io_streams_t &streams, const wchar_t **argv) {
     int argc = builtin_count_args(argv);
     if (argc <= 1) {
         return STATUS_CMD_OK;
@@ -38,8 +38,7 @@ maybe_t<int> builtin_eval(parser_t &parser, io_streams_t &streams, wchar_t **arg
     // buffer in that case.
     shared_ptr<io_bufferfill_t> stdout_fill{};
     if (streams.out_is_piped) {
-        stdout_fill =
-            io_bufferfill_t::create(fd_set_t{}, parser.libdata().read_limit, STDOUT_FILENO);
+        stdout_fill = io_bufferfill_t::create(parser.libdata().read_limit, STDOUT_FILENO);
         if (!stdout_fill) {
             // We were unable to create a pipe, probably fd exhaustion.
             return STATUS_CMD_ERROR;
@@ -50,8 +49,7 @@ maybe_t<int> builtin_eval(parser_t &parser, io_streams_t &streams, wchar_t **arg
     // Of course the same applies to stderr.
     shared_ptr<io_bufferfill_t> stderr_fill{};
     if (streams.err_is_piped) {
-        stderr_fill =
-            io_bufferfill_t::create(fd_set_t{}, parser.libdata().read_limit, STDERR_FILENO);
+        stderr_fill = io_bufferfill_t::create(parser.libdata().read_limit, STDERR_FILENO);
         if (!stderr_fill) {
             return STATUS_CMD_ERROR;
         }
@@ -74,12 +72,12 @@ maybe_t<int> builtin_eval(parser_t &parser, io_streams_t &streams, wchar_t **arg
     // deallocate to close.
     ios.clear();
     if (stdout_fill) {
-        std::shared_ptr<io_buffer_t> output = io_bufferfill_t::finish(std::move(stdout_fill));
-        streams.out.append_narrow_buffer(output->buffer());
+        separated_buffer_t output = io_bufferfill_t::finish(std::move(stdout_fill));
+        streams.out.append_narrow_buffer(std::move(output));
     }
     if (stderr_fill) {
-        std::shared_ptr<io_buffer_t> errput = io_bufferfill_t::finish(std::move(stderr_fill));
-        streams.err.append_narrow_buffer(errput->buffer());
+        separated_buffer_t errput = io_bufferfill_t::finish(std::move(stderr_fill));
+        streams.err.append_narrow_buffer(std::move(errput));
     }
     return status;
 }

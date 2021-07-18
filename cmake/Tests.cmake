@@ -83,9 +83,10 @@ add_custom_target(test_prep
 # So define both a normal target, and a serial variant which enforces ordering.
 foreach(TESTTYPE test serial_test)
   add_custom_target(${TESTTYPE}_low_level
-    COMMAND env XDG_DATA_HOME=${CMAKE_CURRENT_BINARY_DIR}/test/xdg_data
+    COMMAND env XDG_DATA_DIRS=
+                XDG_DATA_HOME=${CMAKE_CURRENT_BINARY_DIR}/test/xdg_data
                 XDG_CONFIG_HOME=${CMAKE_CURRENT_BINARY_DIR}/test/xdg_config
-                XDG_RUNTIME_HOME=${CMAKE_CURRENT_BINARY_DIR}/test/xdg_runtime
+                XDG_RUNTIME_DIR=${CMAKE_CURRENT_BINARY_DIR}/test/xdg_runtime
                 ./fish_tests
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
     DEPENDS fish_tests
@@ -94,18 +95,20 @@ foreach(TESTTYPE test serial_test)
   add_custom_target(${TESTTYPE}_fishscript
                     COMMAND
                         cd tests &&
-                        env XDG_DATA_HOME=${CMAKE_CURRENT_BINARY_DIR}/test/xdg_data
+                        env XDG_DATA_DIRS=
+                            XDG_DATA_HOME=${CMAKE_CURRENT_BINARY_DIR}/test/xdg_data
                             XDG_CONFIG_HOME=${CMAKE_CURRENT_BINARY_DIR}/test/xdg_config
-                            XDG_RUNTIME_HOME=${CMAKE_CURRENT_BINARY_DIR}/test/xdg_runtime
+                            XDG_RUNTIME_DIR=${CMAKE_CURRENT_BINARY_DIR}/test/xdg_runtime
                         ${TEST_ROOT_DIR}/bin/fish test.fish
                     DEPENDS test_prep
                     USES_TERMINAL)
 
   add_custom_target(${TESTTYPE}_interactive
       COMMAND cd tests &&
-                env XDG_DATA_HOME=${CMAKE_CURRENT_BINARY_DIR}/test/xdg_data
+                env XDG_DATA_DIRS=
+                    XDG_DATA_HOME=${CMAKE_CURRENT_BINARY_DIR}/test/xdg_data
                     XDG_CONFIG_HOME=${CMAKE_CURRENT_BINARY_DIR}/test/xdg_config
-                    XDG_RUNTIME_HOME=${CMAKE_CURRENT_BINARY_DIR}/test/xdg_runtime
+                    XDG_RUNTIME_DIR=${CMAKE_CURRENT_BINARY_DIR}/test/xdg_runtime
                 ${TEST_ROOT_DIR}/bin/fish interactive.fish
       DEPENDS test_prep
       USES_TERMINAL)
@@ -113,6 +116,7 @@ endforeach(TESTTYPE)
 
 # Now add a dependency chain between the serial versions.
 # This ensures they run in order.
+add_dependencies(serial_test_low_level test_prep)
 add_dependencies(serial_test_fishscript serial_test_low_level)
 add_dependencies(serial_test_interactive serial_test_fishscript)
 

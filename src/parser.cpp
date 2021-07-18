@@ -272,6 +272,8 @@ static void print_profile(const std::deque<profile_item_t> &items, FILE *out) {
     }
 }
 
+void parser_t::clear_profiling() { profile_items.clear(); }
+
 void parser_t::emit_profiling(const char *path) const {
     // Save profiling information. OK to not use CLO_EXEC here because this is called while fish is
     // exiting (and hence will not fork).
@@ -410,30 +412,19 @@ wcstring parser_t::stack_trace() const {
     return trace;
 }
 
-/// Returns the name of the currently evaluated function if we are currently evaluating a function,
-/// NULL otherwise. This is tested by moving down the block-scope-stack, checking every block if it
-/// is of type FUNCTION_CALL. If the caller doesn't specify a starting position in the stack we
-/// begin with the current block.
-const wchar_t *parser_t::is_function(size_t idx) const {
-    // PCA: Have to make this a string somehow.
-    ASSERT_IS_MAIN_THREAD();
-
-    for (size_t block_idx = idx; block_idx < block_list.size(); block_idx++) {
-        const block_t &b = block_list[block_idx];
+bool parser_t::is_function() const {
+    for (const auto &b : block_list) {
         if (b.is_function_call()) {
-            return b.function_name.c_str();
+            return true;
         } else if (b.type() == block_type_t::source) {
-            // If a function sources a file, obviously that function's offset doesn't
-            // contribute.
+            // If a function sources a file, don't descend further.
             break;
         }
     }
-    return nullptr;
+    return false;
 }
 
-/// Return the function name for the specified stack frame. Default is zero (current frame).
-/// The special value zero means the function frame immediately above the closest breakpoint frame.
-const wchar_t *parser_t::get_function_name(int level) {
+maybe_t<wcstring> parser_t::get_function_name(int level) {
     if (level == 0) {
         // Return the function name for the level preceding the most recent breakpoint. If there
         // isn't one return the function name for the current level.
@@ -443,13 +434,10 @@ const wchar_t *parser_t::get_function_name(int level) {
             if (b.type() == block_type_t::breakpoint) {
                 found_breakpoint = true;
             } else if (found_breakpoint && b.is_function_call()) {
-                return b.function_name.c_str();
+                return b.function_name;
             }
         }
-        return nullptr;  // couldn't find a breakpoint frame
-    } else if (level == 1) {
-        // Return the function name for the current level.
-        return this->is_function();
+        return none();  // couldn't find a breakpoint frame
     }
 
     // Level 1 is the topmost function call. Level 2 is its caller. Etc.
@@ -458,11 +446,15 @@ const wchar_t *parser_t::get_function_name(int level) {
         if (b.is_function_call()) {
             funcs_seen++;
             if (funcs_seen == level) {
-                return b.function_name.c_str();
+                return b.function_name;
             }
+        } else if (b.type() == block_type_t::source && level == 1) {
+            // Historical: If we want the topmost function, but we are really in a file sourced by a
+            // function, don't consider ourselves to be in a function.
+            break;
         }
     }
-    return nullptr;  // couldn't find that function level
+    return none();
 }
 
 int parser_t::get_lineno() const {
@@ -474,8 +466,6 @@ int parser_t::get_lineno() const {
 }
 
 const wchar_t *parser_t::current_filename() const {
-    ASSERT_IS_MAIN_THREAD();
-
     for (const auto &b : block_list) {
         if (b.is_function_call()) {
             return function_get_definition_file(b.function_name);
@@ -564,16 +554,16 @@ void parser_t::job_promote(job_t *job) {
     std::rotate(job_list.begin(), loc, std::next(loc));
 }
 
-job_t *parser_t::job_get(job_id_t id) {
+const job_t *parser_t::job_with_id(job_id_t id) const {
     for (const auto &job : job_list) {
         if (id <= 0 || job->job_id() == id) return job.get();
     }
     return nullptr;
 }
 
-const job_t *parser_t::job_get(job_id_t id) const {
+const job_t *parser_t::job_with_internal_id(internal_job_id_t id) const {
     for (const auto &job : job_list) {
-        if (id <= 0 || job->job_id() == id) return job.get();
+        if (job->internal_job_id == id) return job.get();
     }
     return nullptr;
 }

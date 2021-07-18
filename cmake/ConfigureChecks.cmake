@@ -15,9 +15,20 @@ endif()
 
 # An unrecognized flag is usually a warning and not an error, which CMake apparently does
 # not pick up on. Combine it with -Werror to determine if it's actually supported.
-check_cxx_compiler_flag("-Wno-redundant-move -Werror" HAS_NO_REDUNDANT_MOVE)
+# This is not bulletproof; old versions of GCC only emit a warning about unrecognized warning
+# options when there are other warnings to emit :rolleyes:
+# See https://github.com/fish-shell/fish-shell/commit/fe2da0a9#commitcomment-47431659
+
+# GCC supports -Wno-redundant-move from GCC9 onwards
+check_cxx_compiler_flag("-Werror=no-redundant-move" HAS_NO_REDUNDANT_MOVE)
 if (HAS_NO_REDUNDANT_MOVE)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-redundant-move")
+endif()
+# Clang once supported -Wno-redundant-move but replaced it with a Wredundant-move option instead
+# (and it is functionally different from its older version of GCC's Wno-redundant-move).
+check_cxx_compiler_flag("-Werror=redundant-move" HAS_REDUNDANT_MOVE)
+if (HAS_REDUNDANT_MOVE)
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wredundant-move")
 endif()
 
 # Try using CMake's own logic to locate curses/ncurses
@@ -45,10 +56,6 @@ endif()
 
 # Get threads.
 set(THREADS_PREFER_PTHREAD_FLAG ON)
-# FindThreads < 3.4.0 doesn't work for C++-only projects
-if(CMAKE_VERSION VERSION_LESS 3.4.0)
-    enable_language(C)
-endif()
 find_package(Threads REQUIRED)
 
 # Detect WSL. Does not match against native Windows/WIN32.
@@ -107,6 +114,8 @@ check_include_file_cxx(sys/select.h HAVE_SYS_SELECT_H)
 check_include_files("sys/types.h;sys/sysctl.h" HAVE_SYS_SYSCTL_H)
 check_include_file_cxx(termios.h HAVE_TERMIOS_H) # Needed for TIOCGWINSZ
 
+check_cxx_symbol_exists(eventfd sys/eventfd.h HAVE_EVENTFD)
+check_cxx_symbol_exists(pipe2 unistd.h HAVE_PIPE2)
 check_cxx_symbol_exists(wcscasecmp wchar.h HAVE_WCSCASECMP)
 check_cxx_symbol_exists(wcsdup wchar.h HAVE_WCSDUP)
 check_cxx_symbol_exists(wcslcpy wchar.h HAVE_WCSLCPY)
@@ -225,10 +234,13 @@ IF (NOT LIBATOMIC_NOT_NEEDED)
     set(ATOMIC_LIBRARY "atomic")
 endif()
 
-# Check if mbrtowc implementation attempts to encode invalid UTF-8 sequences
-# Known culprits: at least some versions of macOS (confirmed Snow Leopard and Yosemite)
-try_run(mbrtowc_invalid_utf8_exit mbrtowc_invalid_utf8_compiles ${CMAKE_CURRENT_BINARY_DIR}
-    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/checks/mbrtowc_invalid_utf8.cpp")
-IF ("${mbrtowc_invalid_utf8_compiles}" AND ("${mbrtowc_invalid_utf8_exit}" EQUAL 1))
-    SET(HAVE_BROKEN_MBRTOWC_UTF8 1)
+IF (APPLE)
+    # Check if mbrtowc implementation attempts to encode invalid UTF-8 sequences
+    # Known culprits: at least some versions of macOS (confirmed Snow Leopard and Yosemite)
+    try_run(mbrtowc_invalid_utf8_exit mbrtowc_invalid_utf8_compiles ${CMAKE_CURRENT_BINARY_DIR}
+      "${CMAKE_CURRENT_SOURCE_DIR}/cmake/checks/mbrtowc_invalid_utf8.cpp")
+    IF ("${mbrtowc_invalid_utf8_compiles}" AND ("${mbrtowc_invalid_utf8_exit}" EQUAL 1))
+        SET(HAVE_BROKEN_MBRTOWC_UTF8 1)
+    ENDIF()
 ENDIF()
+

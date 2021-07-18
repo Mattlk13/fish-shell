@@ -3,13 +3,14 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <paths.h>
 #include <signal.h>
 #include <stdio.h>
 #include <time.h>
 
 #include <cstring>
 #include <memory>
-#ifdef FISH_USE_POSIX_SPAWN
+#ifdef HAVE_SPAWN_H
 #include <spawn.h>
 #endif
 #include <cwchar>
@@ -36,9 +37,7 @@
 /// The number of nanoseconds to sleep between attempts to call fork().
 #define FORK_SLEEP_TIME 1000000
 
-/// Fork error message.
-#define FORK_ERROR "Could not create child process - exiting"
-
+extern bool is_thompson_shell_script(const char *path);
 static char *get_interpreter(const char *command, char *buffer, size_t buff_size);
 
 /// Report the error code \p err for a failed setpgid call.
@@ -58,12 +57,12 @@ void report_setpgid_error(int err, bool is_parent, pid_t desired_pgid, const job
     narrow_string_safe(argv0, p->argv0());
     narrow_string_safe(command, j->command_wcstr());
 
-    debug_safe(1, "Could not send %s %s, '%s' in job %s, '%s' from group %s to group %s",
+    FLOGF_SAFE(warning, "Could not send %s %s, '%s' in job %s, '%s' from group %s to group %s",
                is_parent ? "child" : "self", pid_buff, argv0, job_id_buff, command, getpgid_buff,
                job_pgid_buff);
 
     if (is_windows_subsystem_for_linux() && errno == EPERM) {
-        debug_safe(1,
+        FLOGF_SAFE(warning,
                    "Please update to Windows 10 1809/17763 or higher to address known issues "
                    "with process groups and zombie processes.");
     }
@@ -93,7 +92,7 @@ int execute_setpgid(pid_t pid, pid_t pgroup, bool is_parent) {
             // the case in fish, anywhere) or to change the process group ID of a session
             // leader (again, can never be the case). I'm pretty sure this is a WSL bug, as
             // we see the same with tcsetpgrp(2) in other places and it disappears on retry.
-            debug_safe(2, "setpgid(2) returned EPERM. Retrying");
+            FLOGF_SAFE(proc_pgroup, "setpgid(2) returned EPERM. Retrying");
             continue;
         }
 #ifdef __BSD__
@@ -132,7 +131,7 @@ int child_setup_process(pid_t new_termowner, pid_t fish_pgrp, const job_t &job, 
         }
         if (err < 0) {
             if (is_forked) {
-                debug_safe(4, "redirect_in_child_after_fork failed in child_setup_process");
+                FLOGF_SAFE(warning, "failed to set up file descriptors in child_setup_process");
                 exit_without_destructors(1);
             }
             return err;
@@ -169,13 +168,11 @@ int child_setup_process(pid_t new_termowner, pid_t fish_pgrp, const job_t &job, 
 /// FORK_LAPS times, with a very slight delay between each lap. If fork fails even then, the process
 /// will exit with an error message.
 pid_t execute_fork() {
-    ASSERT_IS_MAIN_THREAD();
-
     if (JOIN_THREADS_BEFORE_FORK) {
         // Make sure we have no outstanding threads before we fork. This is a pretty sketchy thing
         // to do here, both because exec.cpp shouldn't have to know about iothreads, and because the
         // completion handlers may do unexpected things.
-        debug_safe(4, "waiting for threads to drain.");
+        FLOGF_SAFE(iothread, "waiting for threads to drain.");
         iothread_drain_all();
     }
 
@@ -203,7 +200,6 @@ pid_t execute_fork() {
         }
     }
 
-    debug_safe(0, FORK_ERROR);
     safe_perror("fork");
     FATAL_EXIT();
     return 0;
@@ -300,7 +296,28 @@ posix_spawner_t::posix_spawner_t(const job_t *j, const dup2_list_t &dup2s) {
 maybe_t<pid_t> posix_spawner_t::spawn(const char *cmd, char *const argv[], char *const envp[]) {
     if (get_error()) return none();
     pid_t pid = -1;
-    if (check_fail(posix_spawn(&pid, cmd, &*actions_, &*attr_, argv, envp))) return none();
+    if (check_fail(posix_spawn(&pid, cmd, &*actions_, &*attr_, argv, envp))) {
+        // The shebang wasn't introduced until UNIX Seventh Edition, so if
+        // the kernel won't run the binary we hand it off to the intpreter
+        // after performing a binary safety check, recommended by POSIX: a
+        // line needs to exist before the first \0 with a lowercase letter
+        if (error_ == ENOEXEC && is_thompson_shell_script(cmd)) {
+            error_ = 0;
+            // Create a new argv with /bin/sh prepended.
+            std::vector<char *> argv2;
+            char interp[] = _PATH_BSHELL;
+            argv2.push_back(interp);
+            for (size_t i = 0; argv[i] != nullptr; i++) {
+                argv2.push_back(argv[i]);
+            }
+            argv2.push_back(nullptr);
+            if (check_fail(posix_spawn(&pid, interp, &*actions_, &*attr_, &argv2[0], envp))) {
+                return none();
+            }
+        } else {
+            return none();
+        }
+    }
     return pid;
 }
 
@@ -308,8 +325,6 @@ maybe_t<pid_t> posix_spawner_t::spawn(const char *cmd, char *const argv[], char 
 
 void safe_report_exec_error(int err, const char *actual_cmd, const char *const *argv,
                             const char *const *envv) {
-    debug_safe(0, "Failed to execute process '%s'. Reason:", actual_cmd);
-
     switch (err) {
         case E2BIG: {
             char sz1[128], sz2[128];
@@ -332,38 +347,35 @@ void safe_report_exec_error(int err, const char *actual_cmd, const char *const *
             if (arg_max > 0) {
                 if (sz >= static_cast<unsigned long long>(arg_max)) {
                     format_size_safe(sz2, static_cast<unsigned long long>(arg_max));
-                    debug_safe(
-                        0,
-                        "The total size of the argument and environment lists %s exceeds the "
-                        "operating system limit of %s.",
-                        sz1, sz2);
+                    FLOGF_SAFE(exec,
+                               "Failed to execute process '%s': the size of argument and "
+                               "environment lists %s exceeds the OS limit of %s.",
+                               actual_cmd, sz1, sz2);
                 } else {
                     // MAX_ARG_STRLEN, a linux thing that limits the size of one argument. It's
                     // defined in binfmts.h, but we don't want to include that just to be able to
                     // print the real limit.
-                    debug_safe(0,
-                               "One of your arguments exceeds the operating system's argument "
-                               "length limit.");
+                    FLOGF_SAFE(exec,
+                               "Failed to execute process '%s': An argument exceeds the OS "
+                               "argument length limit.");
                 }
             } else {
-                debug_safe(0,
-                           "The total size of the argument and environment lists (%s) exceeds the "
+                FLOGF_SAFE(exec,
+                           "Failed to execute process '%s': The total size of the argument and "
+                           "environment lists (%s) exceeds the "
                            "operating system limit.",
-                           sz1);
+                           actual_cmd, sz1);
             }
-
-            debug_safe(0, "Try running the command again with fewer arguments.");
             break;
         }
 
         case ENOEXEC: {
-            const char *err = safe_strerror(errno);
-            debug_safe(0, "exec: %s", err);
-
-            debug_safe(0,
-                       "The file '%s' is marked as an executable but could not be run by the "
-                       "operating system.",
-                       actual_cmd);
+            const char *err_text = safe_strerror(err);
+            FLOGF_SAFE(
+                exec,
+                "%s. The file '%s' is marked as an executable but could not be run by the "
+                "operating system.",
+                err_text, actual_cmd);
             break;
         }
 
@@ -379,29 +391,34 @@ void safe_report_exec_error(int err, const char *actual_cmd, const char *const *
                 // Detect windows line endings and complain specifically about them.
                 auto len = strlen(interpreter);
                 if (len && interpreter[len - 1] == '\r') {
-                    debug_safe(0,
-                               "The file uses windows line endings (\\r\\n). Run dos2unix or "
-                               "similar to fix it.");
+                    FLOGF_SAFE(exec,
+                               "Failed to execute process '%s':  The file uses windows line "
+                               "endings (\\r\\n). Run dos2unix or similar to fix it.",
+                               actual_cmd);
                 } else {
-                    debug_safe(0,
-                               "The file '%s' specified the interpreter '%s', which is not an "
+                    FLOGF_SAFE(exec,
+                               "Failed to execute process '%s': The file specified the interpreter "
+                               "'%s', which is not an "
                                "executable command.",
                                actual_cmd, interpreter);
                 }
             } else {
-                debug_safe(0, "The file '%s' does not exist or could not be executed.", actual_cmd);
+                FLOGF_SAFE(exec,
+                           "Failed to execute process '%s': The file does not exist or could not "
+                           "be executed.",
+                           actual_cmd);
             }
             break;
         }
 
         case ENOMEM: {
-            debug_safe(0, "Out of memory");
+            FLOGF_SAFE(exec, "Out of memory");
             break;
         }
 
         default: {
             const char *err = safe_strerror(errno);
-            debug_safe(0, "exec: %s", err);
+            FLOGF_SAFE(exec, "%s", err);
             break;
         }
     }
@@ -425,9 +442,9 @@ static char *get_interpreter(const char *command, char *buffer, size_t buff_size
         close(fd);
     }
 
-    if (std::strncmp(buffer, "#! /", 4) == 0) {
+    if (std::strncmp(buffer, "#! /", const_strlen("#! /")) == 0) {
         return buffer + 3;
-    } else if (std::strncmp(buffer, "#!/", 3) == 0) {
+    } else if (std::strncmp(buffer, "#!/", const_strlen("#!/")) == 0) {
         return buffer + 2;
     }
     return nullptr;

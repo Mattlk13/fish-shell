@@ -11,6 +11,10 @@ if test -r /etc/os-release
     string replace -r '^ID(?:_LIKE)?\s*=(.*)' '$1' | string trim -c '\'"' | string split " ")
 end
 
+function __fish_default_command_not_found_handler
+    printf "fish: Unknown command: %s\n" (string escape -- $argv[1]) >&2
+end
+
 # If an old handler already exists, defer to that.
 if functions -q __fish_command_not_found_handler
     function fish_command_not_found
@@ -57,16 +61,21 @@ else if type -q pkgfile
             __fish_default_command_not_found_handler $argv[1]
         end
     end
-else if type -q pacman
-    function fish_command_not_found
-        set -l paths $argv[1]
-        # If we've not been given an absolute path, try $PATH as the starting point,
-        # otherwise pacman will try *every path*, and e.g. bash-completion
-        # isn't helpful.
-        string match -q '/*' -- $argv[1]; or set paths $PATH/$argv[1]
-        # Pacman only prints the path, so we still need to print the error.
-        __fish_default_command_not_found_handler $argv[1]
-        pacman -F $paths
+# pacman is too slow, see #7841.
+# else if type -q pacman
+#     function fish_command_not_found
+#         set -l paths $argv[1]
+#         # If we've not been given an absolute path, try $PATH as the starting point,
+#         # otherwise pacman will try *every path*, and e.g. bash-completion
+#         # isn't helpful.
+#         string match -q '/*' -- $argv[1]; or set paths $PATH/$argv[1]
+#         # Pacman only prints the path, so we still need to print the error.
+#         __fish_default_command_not_found_handler $argv[1]
+#         pacman -F $paths
+#     end
+else
+    # Use standard fish command not found handler otherwise
+    function fish_command_not_found --on-event fish_command_not_found
+        __fish_default_command_not_found_handler $argv
     end
 end
-# Use standard fish command not found handler otherwise

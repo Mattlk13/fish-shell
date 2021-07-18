@@ -110,6 +110,18 @@ end
 echo Test 5 $sta
 #CHECK: Test 5 pass
 
+
+function test_builtin_status_clamp_to_255
+    return 300
+end
+test_builtin_status_clamp_to_255
+echo $status
+#CHECK: 255
+
+$fish -c "exit 300"
+echo $status
+#CHECK: 255
+
 ####################
 # echo tests
 echo 'abc\ndef'
@@ -475,3 +487,16 @@ echo $status
 builtin --query echo
 echo $status
 #CHECK: 0
+
+# Check that echo doesn't interpret options *and print them*
+# at the start of quoted args:
+echo '-ne \tart'
+# CHECK: -ne \tart
+echo '-n art'
+echo banana
+# CHECK: -n art
+# CHECK: banana
+
+# This used to be a parse error - #7685.
+echo (echo hello\\)
+# CHECK: hello\

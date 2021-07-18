@@ -20,11 +20,6 @@ magic phrase “unlike other shells”.
 Detailed user documentation is available by running ``help`` within
 fish, and also at https://fishshell.com/docs/current/index.html
 
-You can quickly play with fish right in your browser by clicking the
-button below:
-
-|Try in browser|
-
 Getting fish
 ------------
 
@@ -76,7 +71,7 @@ If packages are not available for your platform, GPG-signed tarballs are
 available from `fishshell.com <https://fishshell.com/>`__ and
 `fish-shell on
 GitHub <https://github.com/fish-shell/fish-shell/releases>`__. See the
-*Building* section for instructions.
+`Building <#building>`__ section for instructions.
 
 Running fish
 ------------
@@ -92,8 +87,8 @@ Running fish requires:
 -  some common \*nix system utilities (currently ``mktemp``), in
    addition to the basic POSIX utilities (``cat``, ``cut``, ``dirname``,
    ``ls``, ``mkdir``, ``mkfifo``, ``rm``, ``sort``, ``tee``, ``tr``,
-   ``uname`` and ``sed`` at least, but the full coreutils plus find, sed
-   and awk is preferred)
+   ``uname`` and ``sed`` at least, but the full coreutils plus ``find`` and
+   ``awk`` is preferred)
 -  The gettext library, if compiled with
    translation support
 
@@ -109,6 +104,7 @@ The following optional features also have specific requirements:
    ``wl-copy``/``wl-paste`` or ``pbcopy``/``pbpaste`` utilities
 -  full completions for ``yarn`` and ``npm`` require the
    ``all-the-package-names`` NPM module
+-  ``colorls`` is used, if its installed, to add color when running ``ls``
 
 Switching to fish
 ~~~~~~~~~~~~~~~~~
@@ -147,7 +143,7 @@ Dependencies
 Compiling fish requires:
 
 -  a C++11 compiler (g++ 4.8 or later, or clang 3.3 or later)
--  CMake (version 3.2 or later)
+-  CMake (version 3.5 or later)
 -  a curses implementation such as ncurses (headers and libraries)
 -  PCRE2 (headers and libraries) - a copy is included with fish
 -  gettext (headers and libraries) - optional, for translation support
@@ -192,6 +188,19 @@ You can open it with Xcode, or run the following to build and install in
 The install directory can be changed using the
 ``-DCMAKE_INSTALL_PREFIX`` parameter for ``cmake``.
 
+Build options
+~~~~~~~~~~~~~
+
+In addition to the normal cmake build options (like ``CMAKE_INSTALL_PREFIX``), fish has some other options available to customize it.
+
+- BUILD_DOCS=ON|OFF - whether to build the documentation. This is automatically set to OFF when sphinx isn't installed.
+- INSTALL_DOCS=ON|OFF - whether to install the docs. This is automatically set to on when BUILD_DOCS is or prebuilt documentation is available (like when building in-tree from a tarball).
+- FISH_USE_SYSTEM_PCRE2=ON|OFF - whether to use an installed pcre2. This is normally autodetected.
+- MAC_CODESIGN_ID=String|OFF - the codesign ID to use on Mac, or "OFF" to disable codesigning.
+- WITH_GETTEXT=ON|OFF - whether to build with gettext support for translations.
+
+Note that fish does *not* support static linking and will attempt to error out if it detects it.
+
 Help, it didn’t build!
 ~~~~~~~~~~~~~~~~~~~~~~
 
@@ -233,5 +242,3 @@ issue <https://github.com/fish-shell/fish-shell/issues/new>`__.
 
 .. |Build Status| image:: https://github.com/fish-shell/fish-shell/workflows/C/C++%20CI/badge.svg
    :target: https://github.com/fish-shell/fish-shell/actions
-.. |Try in browser| image:: https://cdn.rawgit.com/rootnroll/library/assets/try.svg
-   :target: https://rootnroll.com/d/fish-shell/

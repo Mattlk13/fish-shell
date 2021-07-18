@@ -14,19 +14,10 @@ namespace ast {
 struct argument_t;
 }
 
-/// Find the beginning and end of the first subshell in the specified string.
-///
-/// \param in the string to search for subshells
-/// \param begin the starting parenthesis of the subshell
-/// \param end the ending parenthesis of the subshell
-/// \param accept_incomplete whether to permit missing closing parenthesis
-/// \return -1 on syntax error, 0 if no subshells exist and 1 on success
-int parse_util_locate_cmdsubst(const wchar_t *in, wchar_t **begin, wchar_t **end,
-                               bool accept_incomplete);
-
-/// Same as parse_util_locate_cmdsubst, but handles square brackets [ ].
-int parse_util_locate_slice(const wchar_t *in, wchar_t **begin, wchar_t **end,
-                            bool accept_incomplete);
+/// Handles slices: the square brackets in an expression like $foo[5..4]
+/// \return the length of the slice starting at \p in, or 0 if there is no slice, or -1 on error.
+/// This never accepts incomplete slices.
+long parse_util_slice_length(const wchar_t *in);
 
 /// Alternative API. Iterate over command substitutions.
 ///
@@ -41,7 +32,7 @@ int parse_util_locate_slice(const wchar_t *in, wchar_t **begin, wchar_t **end,
 /// \return -1 on syntax error, 0 if no subshells exist and 1 on success
 int parse_util_locate_cmdsubst_range(const wcstring &str, size_t *inout_cursor_offset,
                                      wcstring *out_contents, size_t *out_start, size_t *out_end,
-                                     bool accept_incomplete);
+                                     bool accept_incomplete, bool *out_is_quoted = nullptr);
 
 /// Find the beginning and end of the command substitution under the cursor. If no subshell is
 /// found, the entire string is returned. If the current command substitution is not ended, i.e. the
@@ -104,18 +95,14 @@ size_t parse_util_get_offset(const wcstring &str, int line, long line_offset);
 wcstring parse_util_unescape_wildcards(const wcstring &str);
 
 /// Checks if the specified string is a help option.
-bool parse_util_argument_is_help(const wchar_t *s);
+bool parse_util_argument_is_help(const wcstring &s);
 
 /// Calculates information on the parameter at the specified index.
 ///
 /// \param cmd The command to be analyzed
 /// \param pos An index in the string which is inside the parameter
-/// \param quote If not NULL, store the type of quote this parameter has, can be either ', " or \\0,
-/// meaning the string is not quoted.
-/// \param offset If not NULL, get_param will store the offset to the beginning of the parameter.
-/// \param out_type If not NULL, get_param will store the token type.
-void parse_util_get_parameter_info(const wcstring &cmd, const size_t pos, wchar_t *quote,
-                                   size_t *offset, token_type_t *out_type);
+/// \return the type of quote used by the parameter: either ' or " or \0.
+wchar_t parse_util_get_quote_type(const wcstring &cmd, size_t pos);
 
 /// Attempts to escape the string 'cmd' using the given quote type, as determined by the quote
 /// character. The quote can be a single quote or double quote, or L'\0' to indicate no quoting (and

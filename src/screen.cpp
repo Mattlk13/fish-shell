@@ -627,6 +627,7 @@ static void s_write_mbs(screen_t *screen, const char *s) { writembs(screen->outp
 
 /// Convert a wide string to a multibyte string and append it to the buffer.
 static void s_write_str(screen_t *screen, const wchar_t *s) { screen->outp().writestr(s); }
+static void s_write_str(screen_t *screen, const wcstring &s) { screen->outp().writestr(s); }
 
 /// Returns the length of the "shared prefix" of the two lines, which is the run of matching text
 /// and colors. If the prefix ends on a combining character, do not include the previous character
@@ -739,13 +740,13 @@ static void s_update(screen_t *scr, const wcstring &left_prompt, const wcstring 
         s_move(scr, 0, 0);
         size_t start = 0;
         for (const size_t line_break : left_prompt_layout.line_breaks) {
-            s_write_str(scr, left_prompt.substr(start, line_break - start).c_str());
             if (clr_eol) {
                 s_write_mbs(scr, clr_eol);
             }
+            s_write_str(scr, left_prompt.substr(start, line_break - start));
             start = line_break;
         }
-        s_write_str(scr, left_prompt.c_str() + start);
+        s_write_str(scr, left_prompt.substr(start));
         scr->actual_left_prompt = left_prompt;
         scr->actual.cursor.x = static_cast<int>(left_prompt_width);
     }
@@ -877,9 +878,12 @@ static void s_update(screen_t *scr, const wcstring &left_prompt, const wcstring 
 
         // Output any rprompt if this is the first line.
         if (i == 0 && right_prompt_width > 0) {  //!OCLINT(Use early exit/continue)
+            // Move the cursor to the beginning of the line first to be independent of the width.
+            // This helps prevent staircase effects if fish and the terminal disagree.
+            s_move(scr, 0, 0);
             s_move(scr, static_cast<int>(screen_width - right_prompt_width), static_cast<int>(i));
             set_color(highlight_spec_t{});
-            s_write_str(scr, right_prompt.c_str());
+            s_write_str(scr, right_prompt);
             scr->actual.cursor.x += right_prompt_width;
 
             // We output in the last column. Some terms (Linux) push the cursor further right, past
@@ -896,6 +900,10 @@ static void s_update(screen_t *scr, const wcstring &left_prompt, const wcstring 
             scr->actual.cursor.x = 0;
         }
     }
+
+    // Also move the cursor to the beginning of the line here,
+    // in case we're wrong about the width anywhere.
+    s_move(scr, 0, 0);
 
     // Clear remaining lines (if any) if we haven't cleared the screen.
     if (!has_cleared_screen && need_clear_screen && clr_eol) {

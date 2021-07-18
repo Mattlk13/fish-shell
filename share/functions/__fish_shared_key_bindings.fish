@@ -98,8 +98,7 @@ function __fish_shared_key_bindings -d "Bindings shared between emacs and vi mod
     bind --preset $argv \ed 'set -l cmd (commandline); if test -z "$cmd"; echo; dirh; commandline -f repaint; else; commandline -f kill-word; end'
     bind --preset $argv \cd delete-or-exit
 
-    # Prepend 'sudo ' to the current commandline
-    bind --preset $argv \es __fish_prepend_sudo
+    bind --preset $argv \es "fish_commandline_prepend sudo"
 
     # Allow reading manpages by pressing F1 (many GUI applications) or Alt+h (like in zsh).
     bind --preset $argv -k f1 __fish_man_page
@@ -182,7 +181,7 @@ function __fish_start_bracketed_paste
     set -g __fish_last_bind_mode $fish_bind_mode
     # If the token is currently single-quoted,
     # we escape single-quotes (and backslashes).
-    __fish_commandline_is_singlequoted
+    string match -q 'single*' (__fish_tokenizer_state -- (commandline -ct | string collect))
     and set -g __fish_paste_quoted 1
 end
 

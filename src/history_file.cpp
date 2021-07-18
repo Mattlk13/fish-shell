@@ -4,25 +4,26 @@
 
 #include <cstring>
 
+#include "fds.h"
 #include "history.h"
+#include "path.h"
 
 // Some forward declarations.
 static history_item_t decode_item_fish_2_0(const char *base, size_t len);
 static history_item_t decode_item_fish_1_x(const char *begin, size_t length);
 
-static size_t offset_of_next_item_fish_2_0(const history_file_contents_t &contents,
-                                           size_t *inout_cursor, time_t cutoff_timestamp);
-static size_t offset_of_next_item_fish_1_x(const char *begin, size_t mmap_length,
-                                           size_t *inout_cursor);
+static maybe_t<size_t> offset_of_next_item_fish_2_0(const history_file_contents_t &contents,
+                                                    size_t *inout_cursor, time_t cutoff_timestamp);
+static maybe_t<size_t> offset_of_next_item_fish_1_x(const char *begin, size_t mmap_length,
+                                                    size_t *inout_cursor);
 
 // Check if we should mmap the fd.
 // Don't try mmap() on non-local filesystems.
-static bool should_mmap(int fd) {
+static bool should_mmap() {
     if (history_t::never_mmap) return false;
 
     // mmap only if we are known not-remote (return is 0).
-    int ret = fd_check_is_remote(fd);
-    return ret == 0;
+    return path_get_data_is_remote() == 0;
 }
 
 // Read up to len bytes from fd into address, zeroing the rest.
@@ -45,19 +46,6 @@ static bool read_from_fd(int fd, void *address, size_t len) {
     }
     std::memset(ptr, 0, remaining);
     return true;
-}
-
-/// Try to infer the history file type based on inspecting the data.
-static maybe_t<history_file_type_t> infer_file_type(const void *data, size_t len) {
-    maybe_t<history_file_type_t> result{};
-    if (len > 0) {  // old fish started with a #
-        if (static_cast<const char *>(data)[0] == '#') {
-            result = history_type_fish_1_x;
-        } else {  // assume new fish
-            result = history_type_fish_2_0;
-        }
-    }
-    return result;
 }
 
 static void replace_all(std::string *str, const char *needle, const char *replacement) {
@@ -107,46 +95,90 @@ static void unescape_yaml_fish_2_0(std::string *str) {
     }
 }
 
-history_file_contents_t::~history_file_contents_t() { munmap(const_cast<char *>(start_), length_); }
+// A type wrapping up a region allocated via mmap().
+struct history_file_contents_t::mmap_region_t {
+    void *const ptr;
+    const size_t len;
 
-history_file_contents_t::history_file_contents_t(const char *mmap_start, size_t mmap_length,
-                                                 history_file_type_t type)
-    : start_(mmap_start), length_(mmap_length), type_(type) {
-    assert(mmap_start != MAP_FAILED && "Invalid mmap address");
+    mmap_region_t(void *ptr, size_t len) : ptr(ptr), len(len) {
+        assert(ptr != MAP_FAILED && len > 0 && "Invalid params");
+    }
+
+    ~mmap_region_t() { (void)munmap(ptr, len); }
+
+    /// Map a region [0, len) from an fd.
+    /// \return nullptr on failure.
+    static std::unique_ptr<mmap_region_t> map_file(int fd, size_t len) {
+        if (len == 0) return nullptr;
+        void *ptr = mmap(nullptr, size_t(len), PROT_READ, MAP_PRIVATE, fd, 0);
+        if (ptr == MAP_FAILED) return nullptr;
+        return make_unique<mmap_region_t>(ptr, len);
+    }
+
+    /// Map anonymous memory of a given length.
+    /// \return nullptr on failure.
+    static std::unique_ptr<mmap_region_t> map_anon(size_t len) {
+        if (len == 0) return nullptr;
+        void *ptr =
+#ifdef MAP_ANON
+            mmap(nullptr, size_t(len), PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+#else
+            mmap(0, size_t(len), PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+#endif
+        if (ptr == MAP_FAILED) return nullptr;
+        return make_unique<mmap_region_t>(ptr, len);
+    }
+
+    mmap_region_t(mmap_region_t &&rhs) = delete;
+    void operator=(mmap_region_t &&rhs) = delete;
+    mmap_region_t(const mmap_region_t &) = delete;
+    void operator=(const mmap_region_t &) = delete;
+};
+
+history_file_contents_t::~history_file_contents_t() = default;
+
+history_file_contents_t::history_file_contents_t(std::unique_ptr<mmap_region_t> region)
+    : region_(std::move(region)), start_(static_cast<char *>(region_->ptr)), length_(region_->len) {
+    assert(region_ && start_ && length_ > 0 && "Invalid params");
+}
+
+history_file_contents_t::history_file_contents_t(const char *start, size_t length)
+    : start_(start), length_(length) {
+    // Construct from explicit data, not backed by a file. This is used in tests.
+}
+
+/// Try to infer the history file type based on inspecting the data.
+bool history_file_contents_t::infer_file_type() {
+    assert(length_ > 0 && "File should never be empty");
+    if (start_[0] == '#') {
+        this->type_ = history_type_fish_1_x;
+    } else {  // assume new fish
+        this->type_ = history_type_fish_2_0;
+    }
+    return true;
 }
 
 std::unique_ptr<history_file_contents_t> history_file_contents_t::create(int fd) {
     // Check that the file is seekable, and its size.
     off_t len = lseek(fd, 0, SEEK_END);
     if (len <= 0 || static_cast<unsigned long>(len) >= SIZE_MAX) return nullptr;
-    if (lseek(fd, 0, SEEK_SET) != 0) return nullptr;
 
-    // Read the file, possibly using mmap.
-    void *mmap_start = nullptr;
-    if (should_mmap(fd)) {
-        // We feel confident to map the file directly. Note this is still risky: if another
-        // process truncates the file we risk SIGBUS.
-        mmap_start = mmap(nullptr, size_t(len), PROT_READ, MAP_PRIVATE, fd, 0);
-        if (mmap_start == MAP_FAILED) return nullptr;
-    } else {
-        // We don't want to map the file. mmap some private memory and then read into it. We use
-        // mmap instead of malloc so that the destructor can always munmap().
-        mmap_start =
-#ifdef MAP_ANON
-            mmap(nullptr, size_t(len), PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
-#else
-            mmap(0, size_t(len), PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-#endif
-        if (mmap_start == MAP_FAILED) return nullptr;
-        if (!read_from_fd(fd, mmap_start, len)) return nullptr;
+    bool mmap_file_directly = should_mmap();
+    std::unique_ptr<mmap_region_t> region =
+        mmap_file_directly ? mmap_region_t::map_file(fd, len) : mmap_region_t::map_anon(len);
+    if (!region) return nullptr;
+
+    // If we mapped anonymous memory, we have to read from the file.
+    if (!mmap_file_directly) {
+        if (lseek(fd, 0, SEEK_SET) != 0) return nullptr;
+        if (!read_from_fd(fd, region->ptr, region->len)) return nullptr;
     }
 
-    // Check the file type.
-    auto mtype = infer_file_type(mmap_start, len);
-    if (!mtype) return nullptr;
+    std::unique_ptr<history_file_contents_t> result(new history_file_contents_t(std::move(region)));
 
-    return std::unique_ptr<history_file_contents_t>(
-        new history_file_contents_t(static_cast<const char *>(mmap_start), len, *mtype));
+    // Check the file type.
+    if (!result->infer_file_type()) return nullptr;
+    return result;
 }
 
 history_item_t history_file_contents_t::decode_item(size_t offset) const {
@@ -162,19 +194,13 @@ history_item_t history_file_contents_t::decode_item(size_t offset) const {
 }
 
 maybe_t<size_t> history_file_contents_t::offset_of_next_item(size_t *cursor, time_t cutoff) const {
-    auto offset = size_t(-1);
     switch (this->type()) {
         case history_type_fish_2_0:
-            offset = offset_of_next_item_fish_2_0(*this, cursor, cutoff);
-            break;
+            return offset_of_next_item_fish_2_0(*this, cursor, cutoff);
         case history_type_fish_1_x:
-            offset = offset_of_next_item_fish_1_x(this->begin(), this->length(), cursor);
-            break;
+            return offset_of_next_item_fish_1_x(this->begin(), this->length(), cursor);
     }
-    if (offset == size_t(-1)) {
-        return none();
-    }
-    return offset;
+    return none();
 }
 
 /// Read one line, stripping off any newline, and updating cursor. Note that our input string is NOT
@@ -280,7 +306,7 @@ static history_item_t decode_item_fish_2_0(const char *base, size_t len) {
 
 done:
     history_item_t result(cmd, when);
-    result.set_required_paths(paths);
+    result.set_required_paths(std::move(paths));
     return result;
 }
 
@@ -339,10 +365,10 @@ static const char *next_line(const char *start, const char *end) {
 /// Pass the file contents and a pointer to a cursor size_t, initially 0.
 /// If custoff_timestamp is nonzero, skip items created at or after that timestamp.
 /// Returns (size_t)-1 when done.
-static size_t offset_of_next_item_fish_2_0(const history_file_contents_t &contents,
-                                           size_t *inout_cursor, time_t cutoff_timestamp) {
+static maybe_t<size_t> offset_of_next_item_fish_2_0(const history_file_contents_t &contents,
+                                                    size_t *inout_cursor, time_t cutoff_timestamp) {
     size_t cursor = *inout_cursor;
-    auto result = size_t(-1);
+    maybe_t<size_t> result = none();
     const size_t length = contents.length();
     const char *const begin = contents.begin();
     const char *const end = contents.end();
@@ -369,18 +395,18 @@ static size_t offset_of_next_item_fish_2_0(const history_file_contents_t &conten
 
         // Hackish: fish 1.x rewriting a fish 2.0 history file can produce lines with lots of
         // leading "- cmd: - cmd: - cmd:". Trim all but one leading "- cmd:".
-        const char *double_cmd = "- cmd: - cmd: ";
-        const size_t double_cmd_len = std::strlen(double_cmd);
+        constexpr const char double_cmd[] = "- cmd: - cmd: ";
+        constexpr const size_t double_cmd_len = const_strlen(double_cmd);
         while (static_cast<size_t>(a_newline - line_start) > double_cmd_len &&
                !std::memcmp(line_start, double_cmd, double_cmd_len)) {
             // Skip over just one of the - cmd. In the end there will be just one left.
-            line_start += std::strlen("- cmd: ");
+            line_start += const_strlen("- cmd: ");
         }
 
         // Hackish: fish 1.x rewriting a fish 2.0 history file can produce commands like "when:
         // 123456". Ignore those.
-        const char *cmd_when = "- cmd:    when:";
-        const size_t cmd_when_len = std::strlen(cmd_when);
+        constexpr const char cmd_when[] = "- cmd:    when:";
+        constexpr const size_t cmd_when_len = const_strlen(cmd_when);
         if (static_cast<size_t>(a_newline - line_start) >= cmd_when_len &&
             !std::memcmp(line_start, cmd_when, cmd_when_len)) {
             continue;
@@ -422,15 +448,14 @@ static size_t offset_of_next_item_fish_2_0(const history_file_contents_t &conten
         }
 
         // We made it through the gauntlet.
-        result = line_start - begin;
-        break;  //!OCLINT(avoid branching statement as last in loop)
+        *inout_cursor = cursor;
+        return line_start - begin;
     }
-
-    *inout_cursor = cursor;
-    return result;
+    return none();
 }
 
 void append_history_item_to_buffer(const history_item_t &item, std::string *buffer) {
+    assert(item.should_write_to_disk() && "Item should not be persisted");
     auto append = [=](const char *a, const char *b = nullptr, const char *c = nullptr) {
         if (a) buffer->append(a);
         if (b) buffer->append(b);
@@ -536,9 +561,9 @@ static history_item_t decode_item_fish_1_x(const char *begin, size_t length) {
 
 /// Same as offset_of_next_item_fish_2_0, but for fish 1.x (pre fishfish).
 /// Adapted from history_populate_from_mmap in history.c
-static size_t offset_of_next_item_fish_1_x(const char *begin, size_t mmap_length,
-                                           size_t *inout_cursor) {
-    if (mmap_length == 0 || *inout_cursor >= mmap_length) return static_cast<size_t>(-1);
+static maybe_t<size_t> offset_of_next_item_fish_1_x(const char *begin, size_t mmap_length,
+                                                    size_t *inout_cursor) {
+    if (mmap_length == 0 || *inout_cursor >= mmap_length) return none();
 
     const char *end = begin + mmap_length;
     const char *pos;
@@ -562,6 +587,11 @@ static size_t offset_of_next_item_fish_1_x(const char *begin, size_t mmap_length
             }
             ignore_newline = false;
         }
+    }
+
+    if (pos == end && !all_done) {
+        // No trailing newline, treat this item as incomplete and ignore it.
+        return none();
     }
 
     *inout_cursor = (pos - begin);

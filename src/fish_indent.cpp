@@ -38,6 +38,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA
 #include "common.h"
 #include "env.h"
 #include "expand.h"
+#include "fds.h"
 #include "fish_version.h"
 #include "flog.h"
 #include "highlight.h"
@@ -46,6 +47,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA
 #include "parse_constants.h"
 #include "parse_util.h"
 #include "print_help.h"
+#include "wcstringutil.h"
 #include "wutil.h"  // IWYU pragma: keep
 
 // The number of spaces per indent isn't supposed to be configurable.
@@ -86,17 +88,6 @@ namespace {
 /// From C++14.
 template <bool B, typename T = void>
 using enable_if_t = typename std::enable_if<B, T>::type;
-
-/// \return the number of escaping backslashes before a character.
-/// \p idx may be "one past the end."
-size_t count_preceding_backslashes(const wcstring &text, size_t idx) {
-    assert(idx <= text.size() && "Out of bounds");
-    size_t backslashes = 0;
-    while (backslashes < idx && text.at(idx - backslashes - 1) == L'\\') {
-        backslashes++;
-    }
-    return backslashes;
-}
 
 /// \return whether a character at a given index is escaped.
 /// A character is escaped if it has an odd number of backslashes.
@@ -176,9 +167,10 @@ struct pretty_printer_t {
     static gap_flags_t gap_text_flags_before_node(const node_t &node) {
         gap_flags_t result = default_flags;
         switch (node.type) {
-            // Allow escaped newlines in argument and redirection lists.
+            // Allow escaped newlines before leaf nodes that can be part of a long command.
             case type_t::argument:
             case type_t::redirection:
+            case type_t::variable_assignment:
                 result |= allow_escaped_newlines;
                 break;
 
@@ -190,6 +182,23 @@ struct pretty_printer_t {
                     case parse_token_type_t::pipe:
                         result |= allow_escaped_newlines;
                         break;
+                    case parse_token_type_t::string: {
+                        // Allow escaped newlines before commands that follow a variable assignment
+                        // since both can be long (#7955).
+                        const node_t *p = node.parent;
+                        if (p->type != type_t::decorated_statement) break;
+                        p = p->parent;
+                        assert(p->type == type_t::statement);
+                        p = p->parent;
+                        if (auto job = p->try_as<job_t>()) {
+                            if (!job->variables.empty()) result |= allow_escaped_newlines;
+                        } else if (auto job_cnt = p->try_as<job_continuation_t>()) {
+                            if (!job_cnt->variables.empty()) result |= allow_escaped_newlines;
+                        } else if (auto not_stmt = p->try_as<not_statement_t>()) {
+                            if (!not_stmt->variables.empty()) result |= allow_escaped_newlines;
+                        }
+                        break;
+                    }
                     default:
                         break;
                 }
@@ -376,7 +385,8 @@ struct pretty_printer_t {
     //   begin | stuff
     //
     //  We do not handle errors here - instead our caller does.
-    bool emit_gap_text(const wcstring &gap_text, gap_flags_t flags) {
+    bool emit_gap_text(source_range_t range, gap_flags_t flags) {
+        wcstring gap_text = substr(range);
         // Common case: if we are only spaces, do nothing.
         if (gap_text.find_first_not_of(L' ') == wcstring::npos) return false;
 
@@ -385,7 +395,6 @@ struct pretty_printer_t {
         // Note we do not have to be concerned with escaped backslashes or escaped #s. This is gap
         // text - we already know it has no semantic significance.
         size_t escaped_nl = gap_text.find(L"\\\n");
-        bool have_line_continuation = false;
         if (escaped_nl != wcstring::npos) {
             size_t comment_idx = gap_text.find(L'#');
             if ((flags & allow_escaped_newlines) ||
@@ -395,9 +404,9 @@ struct pretty_printer_t {
                     output.append(L" ");
                 }
                 output.append(L"\\\n");
-                // Indent the line continuation and any comment before it (#7252).
-                have_line_continuation = true;
-                current_indent += 1;
+                // Indent the continuation line and any leading comments (#7252).
+                // Use the indentation level of the next newline.
+                current_indent = indents.at(range.start + escaped_nl + 1);
                 emit_space_or_indent();
             }
         }
@@ -440,10 +449,6 @@ struct pretty_printer_t {
             }
         }
         if (needs_nl) emit_newline();
-        if (have_line_continuation) {
-            emit_space_or_indent();
-            current_indent -= 1;
-        }
         return needs_nl;
     }
 
@@ -495,7 +500,7 @@ struct pretty_printer_t {
             if (range_contained_error(range)) {
                 output.append(substr(range));
             } else {
-                added_newline = emit_gap_text(substr(range), flags);
+                added_newline = emit_gap_text(range, flags);
             }
         }
         // Always clear gap_text_mask_newline after emitting even empty gap text.
@@ -609,11 +614,11 @@ struct pretty_printer_t {
             auto flags = gap_text_flags_before_node(node);
             current_indent = indents.at(node.range.start);
             bool added_newline = emit_gap_text_before(node.range, flags);
-            wcstring text = source.substr(node.range.start, node.range.length);
-            if (added_newline && !text.empty() && text.front() == L'\n') {
-                text = text.substr(strlen("\n"));
+            source_range_t gap_range = node.range;
+            if (added_newline && gap_range.length > 0 && source.at(gap_range.start) == L'\n') {
+                gap_range.start++;
             }
-            emit_gap_text(text, flags);
+            emit_gap_text(gap_range, flags);
         }
     }
 
@@ -641,6 +646,7 @@ static const char *highlight_role_to_string(highlight_role_t role) {
         TEST_ROLE(normal)
         TEST_ROLE(error)
         TEST_ROLE(command)
+        TEST_ROLE(keyword)
         TEST_ROLE(statement_terminator)
         TEST_ROLE(param)
         TEST_ROLE(comment)
@@ -916,20 +922,10 @@ int main(int argc, char *argv[]) {
                 break;
             }
             case 'd': {
-                char *end;
-                long tmp;
-
-                errno = 0;
-                tmp = strtol(optarg, &end, 10);
-
-                if (tmp >= 0 && tmp <= 10 && !*end && !errno) {
-                    debug_level = static_cast<int>(tmp);
-                } else {
-                    activate_flog_categories_by_pattern(str2wcstring(optarg));
-                }
+                activate_flog_categories_by_pattern(str2wcstring(optarg));
                 for (auto cat : get_flog_categories()) {
                     if (cat->enabled) {
-                        printf("Debug enabled for category: %ls\n", cat->name);
+                        std::fwprintf(stdout, L"Debug enabled for category: %ls\n", cat->name);
                     }
                 }
                 break;

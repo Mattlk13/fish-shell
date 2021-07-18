@@ -16,11 +16,6 @@ from docutils import nodes, utils
 # -- Helper functions --------------------------------------------------------
 
 
-def strip_ext(path):
-    """ Remove the extension from a path. """
-    return os.path.splitext(path)[0]
-
-
 # A :issue: role to link to github issues.
 # Used like :issue:`2364`
 def issue_role(name, rawtext, text, lineno, inliner, options=None, content=None):
@@ -52,12 +47,6 @@ def setup(app):
     )
     lexers["fish-docs-samples"] = fish_indent_lexer
 
-    # add_css_file only appears in Sphinx 1.8.0
-    if hasattr(app, "add_css_file"):
-        app.add_css_file("custom.css")
-    else:
-        app.add_stylesheet("custom.css")
-
     app.add_config_value("issue_url", default=None, rebuild="html")
     app.add_role("issue", issue_role)
 
@@ -79,7 +68,7 @@ highlight_language = "fish-docs-samples"
 # -- Project information -----------------------------------------------------
 
 project = "fish-shell"
-copyright = "2020, fish-shell developers"
+copyright = "2021, fish-shell developers"
 author = "fish-shell developers"
 issue_url = "https://github.com/fish-shell/fish-shell/issues"
 
@@ -95,18 +84,6 @@ version = release.rsplit(".", 1)[0]
 
 
 # -- General configuration ---------------------------------------------------
-
-# If your documentation needs a minimal Sphinx version, state it here.
-#
-# needs_sphinx = '1.0'
-
-# Add any Sphinx extension module names here, as strings. They can be
-# extensions coming with Sphinx (named 'sphinx.ext.*') or your custom
-# ones.
-extensions = []
-
-# Add any paths that contain templates here, relative to this directory.
-templates_path = ["_templates"]
 
 # The suffix(es) of source filenames.
 # You can specify multiple suffix as a list of string:
@@ -141,19 +118,9 @@ pygments_style = None
 # of _static/pygments.css
 html_theme_path = ["."]
 html_theme = "python_docs_theme"
-# html_theme_path = ["./cloud_sptheme/themes"]
-# html_theme = "cloud"
 
-# Theme options are theme-specific and customize the look and feel of a theme
-# further.  For a list of options available for each theme, see the
-# documentation.
-#
-# html_theme_options = {}
-
-# Add any paths that contain custom static files (such as style sheets) here,
-# relative to this directory. They are copied after the builtin static files,
-# so a file named "default.css" will overwrite the builtin "default.css".
-html_static_path = ["_static"]
+# Don't add a weird "_sources" directory
+html_copy_source = False
 
 # Custom sidebar templates, must be a dictionary that maps document names
 # to template names.
@@ -166,27 +133,16 @@ html_static_path = ["_static"]
 html_sidebars = {"**": ["globaltoc.html", "searchbox.html", "localtoc.html"]}
 
 
-# -- Options for HTMLHelp output ---------------------------------------------
-
-# Output file base name for HTML help builder.
-htmlhelp_basename = "fish-shelldoc"
-
-
 # -- Options for LaTeX output ------------------------------------------------
 
+# The default font is "GNU FreeSans" or something which I've never heard of.
+# Make this something that might actually be installed.
 latex_elements = {
-    # The paper size ('letterpaper' or 'a4paper').
-    #
-    # 'papersize': 'letterpaper',
-    # The font size ('10pt', '11pt' or '12pt').
-    #
-    # 'pointsize': '10pt',
-    # Additional stuff for the LaTeX preamble.
-    #
-    # 'preamble': '',
-    # Latex figure (float) alignment
-    #
-    # 'figure_align': 'htbp',
+    'fontpkg': r'''
+    \setmainfont{Noto Serif}
+    \setsansfont{Noto Sans}
+    \setmonofont{Noto Sans Mono}
+    ''',
 }
 
 # Grouping the document tree into LaTeX files. List of tuples
@@ -199,9 +155,12 @@ latex_documents = [
         "fish-shell Documentation",
         "fish-shell developers",
         "manual",
-    )
+    ),
 ]
 
+# The default pdflatex doesn't handle unicode.
+# Switch to an engine that does (why pdflatex still exists and is still the default? I don't know)
+latex_engine = 'xelatex'
 
 # -- Options for manual page output ------------------------------------------
 
@@ -215,13 +174,18 @@ def get_command_description(path, name):
                 return desc.strip()
     raise SphinxWarning("No description in file %s" % os.path.basename(path))
 
+# Newer sphinxen apparently create another subdirectory which breaks our man lookup.
+# Unbreak it (#7996)
+man_make_section_directory = False
 
 # One entry per manual page. List of tuples
 # (source start file, name, description, authors, manual section).
 man_pages = [
     (master_doc, "fish-doc", "fish-shell Documentation", [author], 1),
     ("tutorial", "fish-tutorial", "fish-shell tutorial", [author], 1),
-    ("CHANGELOG", "fish-changelog", "fish-shell changelog", [author], 1),
+    ("language", "fish-language", "The fish language", [author], 1),
+    ("interactive", "fish-interactive", "Using fish interactively", [author], 1),
+    ("relnotes", "fish-releasenotes", "fish-shell release notes", [author], 1),
     ("completions", "fish-completions", "Writing fish completions", [author], 1),
     (
         "fish_for_bash_users",
@@ -233,7 +197,7 @@ man_pages = [
     ("faq", "fish-faq", "fish-shell faq", [author], 1),
 ]
 for path in sorted(glob.glob("cmds/*")):
-    docname = strip_ext(path)
+    docname = os.path.splitext(path)[0]
     cmd = os.path.basename(docname)
     man_pages.append((docname, cmd, get_command_description(path, cmd), "", 1))
 
@@ -275,3 +239,5 @@ epub_exclude_files = ["search.html"]
 
 # Disable smart-quotes to prevent double dashes from becoming emdashes.
 smartquotes = False
+
+linkcheck_ignore = [r'https://github.com/fish-shell/fish-shell/issues/\d+']

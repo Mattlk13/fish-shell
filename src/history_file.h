@@ -12,6 +12,7 @@
 #include "maybe.h"
 
 class history_item_t;
+class history_tests_t;
 
 // History file types.
 enum history_file_type_t { history_type_fish_2_0, history_type_fish_1_x };
@@ -52,17 +53,27 @@ class history_file_contents_t {
     ~history_file_contents_t();
 
    private:
-    // The memory mapped pointer.
-    const char *start_;
+    // A type wrapping up the logic around mmap and munmap.
+    struct mmap_region_t;
+    const std::unique_ptr<mmap_region_t> region_;
 
-    // The mapped length.
+    // The memory mapped pointer and length.
+    // The ptr aliases our region. The length may be slightly smaller, if there is a trailing
+    // incomplete history item.
+    const char *const start_;
     const size_t length_;
 
     // The type of the mapped file.
-    const history_file_type_t type_;
+    // This is set at construction and not changed after.
+    history_file_type_t type_{};
 
-    // Private constructor; use the static create() function.
-    history_file_contents_t(const char *mmap_start, size_t mmap_length, history_file_type_t type);
+    // Private constructors; use the static create() function.
+    explicit history_file_contents_t(std::unique_ptr<mmap_region_t> region);
+    history_file_contents_t(const char *start, size_t length);
+
+    // Try to infer the file type to populate type_.
+    // \return true on success, false on error.
+    bool infer_file_type();
 
     history_file_contents_t(history_file_contents_t &&) = delete;
     void operator=(history_file_contents_t &&) = delete;

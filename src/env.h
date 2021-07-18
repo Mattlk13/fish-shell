@@ -80,7 +80,7 @@ struct statuses_t {
 };
 
 /// Initialize environment variable data.
-void env_init(const struct config_paths_t *paths = nullptr);
+void env_init(const struct config_paths_t *paths = nullptr, bool do_uvars = true, bool default_paths = false);
 
 /// Various things we need to initialize at run-time that don't really fit any of the other init
 /// routines.
@@ -178,7 +178,7 @@ class env_var_t {
     static env_var_flags_t flags_for(const wchar_t *name);
     static std::shared_ptr<const wcstring_list_t> empty_list();
 
-    env_var_t &operator=(const env_var_t &var) = default;
+    env_var_t &operator=(const env_var_t &) = default;
     env_var_t &operator=(env_var_t &&) = default;
 
     bool operator==(const env_var_t &rhs) const {
@@ -280,7 +280,7 @@ class env_stack_t final : public environment_t {
     bool universal_barrier();
 
     /// Returns an array containing all exported variables in a format suitable for execv.
-    std::shared_ptr<const null_terminated_array_t<char>> export_arr();
+    std::shared_ptr<owning_null_terminated_array_t> export_arr();
 
     /// Snapshot this environment. This means returning a read-only copy. Local variables are copied
     /// but globals are shared (i.e. changes to global will be visible to this snapshot). This
@@ -309,7 +309,7 @@ class env_stack_t final : public environment_t {
     static env_stack_t &globals();
 };
 
-extern bool g_use_posix_spawn;
+bool get_use_posix_spawn();
 
 extern bool term_has_xn;  // does the terminal have the "eat_newline_glitch"
 

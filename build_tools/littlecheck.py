@@ -25,6 +25,7 @@ COMMENT_RE = r"^(?:[^#].*)?#\s*"
 
 # A regex showing how to run the file.
 RUN_RE = re.compile(COMMENT_RE + r"RUN:\s+(.*)\n")
+REQUIRES_RE = re.compile(COMMENT_RE + r"REQUIRES:\s+(.*)\n")
 
 # A regex capturing lines that should be checked against stdout.
 CHECK_STDOUT_RE = re.compile(COMMENT_RE + r"CHECK:\s+(.*)\n")
@@ -32,6 +33,20 @@ CHECK_STDOUT_RE = re.compile(COMMENT_RE + r"CHECK:\s+(.*)\n")
 # A regex capturing lines that should be checked against stderr.
 CHECK_STDERR_RE = re.compile(COMMENT_RE + r"CHECKERR:\s+(.*)\n")
 
+SKIP = object()
+
+def find_command(program):
+    import os
+
+    path, name = os.path.split(program)
+    if path:
+        return os.path.isfile(program) and os.access(program, os.X_OK)
+    for path in os.environ["PATH"].split(os.pathsep):
+        exe = os.path.join(path, program)
+        if os.path.isfile(exe) and os.access(exe, os.X_OK):
+            return exe
+
+    return None
 
 class Config(object):
     def __init__(self):
@@ -357,6 +372,20 @@ def perform_substitution(input_str, subs):
     return re.sub(r"%(%|[a-zA-Z0-9_-]+)", subber, input_str)
 
 
+def runproc(cmd):
+    """ Wrapper around subprocess.Popen to save typing """
+    PIPE = subprocess.PIPE
+    proc = subprocess.Popen(
+        cmd,
+        stdin=PIPE,
+        stdout=PIPE,
+        stderr=PIPE,
+        shell=True,
+        close_fds=True,  # For Python 2.6 as shipped on RHEL 6
+    )
+    return proc
+
+
 class TestRun(object):
     def __init__(self, name, runcmd, checker, subs, config):
         self.name = name
@@ -442,21 +471,18 @@ class TestRun(object):
         PIPE = subprocess.PIPE
         if self.config.verbose:
             print(self.subbed_command)
-        proc = subprocess.Popen(
-            self.subbed_command,
-            stdin=PIPE,
-            stdout=PIPE,
-            stderr=PIPE,
-            shell=True,
-            close_fds=True,  # For Python 2.6 as shipped on RHEL 6
-        )
+        proc = runproc(self.subbed_command)
         stdout, stderr = proc.communicate()
         # HACK: This is quite cheesy: POSIX specifies that sh should return 127 for a missing command.
-        # Technically it's also possible to return it in other conditions.
-        # Practically, that's *probably* not going to happen.
+        # It's also possible that it'll be returned in other situations,
+        # most likely when the last command in a shell script doesn't exist.
+        # So we check if the command *we execute* exists, and complain then.
         status = proc.returncode
-        if status == 127:
-            raise CheckerError("Command could not be found: " + self.subbed_command)
+        cmd = shlex.split(self.subbed_command)[0]
+        if status == 127 and not find_command(cmd):
+            raise CheckerError("Command could not be found: " + cmd)
+        if status == 126 and not find_command(cmd):
+            raise CheckerError("Command is not executable: " + cmd)
 
         outlines = [
             Line(text, idx + 1, "stdout")
@@ -571,9 +597,14 @@ class Checker(object):
             # If no RUN command has been given, fall back to the shebang.
             if lines[0].text.startswith("#!"):
                 # Remove the "#!" at the beginning, and the newline at the end.
-                self.runcmds = [RunCmd(lines[0].text[2:-1] + " %s", lines[0])]
+                cmd = lines[0].text[2:-1]
+                if not find_command(cmd):
+                    raise CheckerError("Command could not be found: " + cmd)
+                self.runcmds = [RunCmd(cmd + " %s", lines[0])]
             else:
                 raise CheckerError("No runlines ('# RUN') found")
+
+        self.requirecmds = [RunCmd.parse(sl) for sl in group1s(REQUIRES_RE)]
 
         # Find check cmds.
         self.outchecks = [
@@ -589,6 +620,19 @@ def check_file(input_file, name, subs, config, failure_handler):
     success = True
     lines = Line.readfile(input_file, name)
     checker = Checker(name, lines)
+
+    # Run all the REQUIRES lines first,
+    # if any of them fail it's a SKIP
+    for reqcmd in checker.requirecmds:
+        proc = runproc(
+            perform_substitution(reqcmd.args, subs)
+        )
+        stdout, stderr = proc.communicate()
+        status = proc.returncode
+        if proc.returncode > 0:
+            return SKIP
+
+    # Only then run the RUN lines.
     for runcmd in checker.runcmds:
         failure = TestRun(name, runcmd, checker, subs, config).run()
         if failure:
@@ -668,14 +712,20 @@ def main():
         subs = def_subs.copy()
         subs["s"] = path
         starttime = datetime.datetime.now()
-        if not check_path(path, subs, config, TestFailure.print_message):
+        ret = check_path(path, subs, config, TestFailure.print_message)
+        if not ret:
             failure_count += 1
         elif config.progress:
             endtime = datetime.datetime.now()
             duration_ms = round((endtime - starttime).total_seconds() * 1000)
+            reason = "ok"
+            color = "{GREEN}"
+            if ret is SKIP:
+                reason = "SKIPPED"
+                color = "{BLUE}"
             print(
-                "{GREEN}ok{RESET} ({duration} ms)".format(
-                    duration=duration_ms, **fields
+                (color + "{reason}{RESET} ({duration} ms)").format(
+                    duration=duration_ms, reason=reason, **fields
                 )
             )
     sys.exit(failure_count)

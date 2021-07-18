@@ -37,7 +37,7 @@ static int send_to_bg(parser_t &parser, io_streams_t &streams, job_t *j) {
 }
 
 /// Builtin for putting a job in the background.
-maybe_t<int> builtin_bg(parser_t &parser, io_streams_t &streams, wchar_t **argv) {
+maybe_t<int> builtin_bg(parser_t &parser, io_streams_t &streams, const wchar_t **argv) {
     const wchar_t *cmd = argv[0];
     int argc = builtin_count_args(argv);
     help_only_cmd_opts_t opts;
@@ -72,7 +72,7 @@ maybe_t<int> builtin_bg(parser_t &parser, io_streams_t &streams, wchar_t **argv)
     }
 
     // The user specified at least one job to be backgrounded.
-    std::vector<int> pids;
+    std::vector<pid_t> pids;
 
     // If one argument is not a valid pid (i.e. integer >= 0), fail without backgrounding anything,
     // but still print errors for all of them.

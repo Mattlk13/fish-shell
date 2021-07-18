@@ -14,6 +14,7 @@
 
 #include "common.h"
 #include "env.h"
+#include "fds.h"
 #include "flog.h"
 #include "global_safety.h"
 #include "maybe.h"
@@ -23,86 +24,41 @@ using std::shared_ptr;
 
 class job_group_t;
 
-/// A simple set of FDs.
-struct fd_set_t {
-    std::vector<bool> fds;
-
-    void add(int fd) {
-        assert(fd >= 0 && "Invalid fd");
-        if (static_cast<size_t>(fd) >= fds.size()) {
-            fds.resize(fd + 1);
-        }
-        fds[fd] = true;
-    }
-
-    bool contains(int fd) const {
-        assert(fd >= 0 && "Invalid fd");
-        return static_cast<size_t>(fd) < fds.size() && fds[fd];
-    }
-
-    bool empty() const { return fds.empty(); }
-};
-
-/// separated_buffer_t is composed of a sequence of elements, some of which may be explicitly
-/// separated (e.g. through string spit0) and some of which the separation is inferred. This enum
-/// tracks the type.
+/// separated_buffer_t represents a buffer of output from commands, prepared to be turned into a
+/// variable. For example, command substitutions output into one of these. Most commands just
+/// produce a stream of bytes, and those get stored directly. However other commands produce
+/// explicitly separated output, in particular `string` like `string collect` and `string split0`.
+/// The buffer tracks a sequence of elements. Some elements are explicitly separated and should not
+/// be further split; other elements have inferred separation and may be split by IFS (or not,
+/// depending on its value).
 enum class separation_type_t {
-    /// This element's separation should be inferred, e.g. through IFS.
-    inferred,
-    /// This element was explicitly separated and should not be separated further.
-    explicitly
+    inferred,    // this element should be further separated by IFS
+    explicitly,  // this element is explicitly separated and should not be further split
 };
 
 /// A separated_buffer_t contains a list of elements, some of which may be separated explicitly and
 /// others which must be separated further by the user (e.g. via IFS).
-template <typename StringType>
 class separated_buffer_t {
    public:
     struct element_t {
-        StringType contents;
+        std::string contents;
         separation_type_t separation;
 
-        element_t(StringType contents, separation_type_t sep)
+        element_t(std::string contents, separation_type_t sep)
             : contents(std::move(contents)), separation(sep) {}
 
         bool is_explicitly_separated() const { return separation == separation_type_t::explicitly; }
     };
 
-   private:
-    /// Limit on how much data we'll buffer. Zero means no limit.
-    size_t buffer_limit_;
-
-    /// Current size of all contents.
-    size_t contents_size_{0};
-
-    /// List of buffer elements.
-    std::vector<element_t> elements_;
-
-    /// True if we're discarding input because our buffer_limit has been exceeded.
-    bool discard = false;
-
-    /// Mark that we are about to add the given size \p delta to the buffer. \return true if we
-    /// succeed, false if we exceed buffer_limit.
-    bool try_add_size(size_t delta) {
-        if (discard) return false;
-        contents_size_ += delta;
-        if (contents_size_ < delta) {
-            // Overflow!
-            set_discard();
-            return false;
-        }
-        if (buffer_limit_ > 0 && contents_size_ > buffer_limit_) {
-            set_discard();
-            return false;
-        }
-        return true;
-    }
-
     /// separated_buffer_t may not be copied.
     separated_buffer_t(const separated_buffer_t &) = delete;
     void operator=(const separated_buffer_t &) = delete;
 
-   public:
+    /// We may be moved.
+    /// Note this leaves the moved-from value in a bogus state until clear() is called on it.
+    separated_buffer_t(separated_buffer_t &&) = default;
+    separated_buffer_t &operator=(separated_buffer_t &&) = default;
+
     /// Construct a separated_buffer_t with the given buffer limit \p limit, or 0 for no limit.
     separated_buffer_t(size_t limit) : buffer_limit_(limit) {}
 
@@ -113,19 +69,12 @@ class separated_buffer_t {
     size_t size() const { return contents_size_; }
 
     /// \return whether the output has been discarded.
-    bool discarded() const { return discard; }
-
-    /// Mark the contents as discarded.
-    void set_discard() {
-        elements_.clear();
-        contents_size_ = 0;
-        discard = true;
-    }
+    bool discarded() const { return discard_; }
 
     /// Serialize the contents to a single string, where explicitly separated elements have a
     /// newline appended.
-    StringType newline_serialized() const {
-        StringType result;
+    std::string newline_serialized() const {
+        std::string result;
         result.reserve(size());
         for (const auto &elem : elements_) {
             result.append(elem.contents);
@@ -139,32 +88,75 @@ class separated_buffer_t {
     /// \return the list of elements.
     const std::vector<element_t> &elements() const { return elements_; }
 
-    /// Append an element with range [begin, end) and the given separation type \p sep.
-    template <typename Iterator>
-    void append(Iterator begin, Iterator end, separation_type_t sep = separation_type_t::inferred) {
-        if (!try_add_size(std::distance(begin, end))) return;
+    /// Append a string \p str of a given length \p len, with separation type \p sep.
+    void append(const char *str, size_t len, separation_type_t sep = separation_type_t::inferred) {
+        if (!try_add_size(len)) return;
         // Try merging with the last element.
-        if (sep == separation_type_t::inferred && !elements_.empty() &&
-            !elements_.back().is_explicitly_separated()) {
-            elements_.back().contents.append(begin, end);
+        if (sep == separation_type_t::inferred && last_inferred()) {
+            elements_.back().contents.append(str, len);
         } else {
-            elements_.emplace_back(StringType(begin, end), sep);
+            elements_.emplace_back(std::string(str, len), sep);
         }
     }
 
-    /// Append a string \p str with the given separation type \p sep.
-    void append(const StringType &str, separation_type_t sep = separation_type_t::inferred) {
-        append(str.begin(), str.end(), sep);
-    }
-
-    // Given that this is a narrow stream, convert a wide stream \p rhs to narrow and then append
-    // it.
-    template <typename RHSStringType>
-    void append_wide_buffer(const separated_buffer_t<RHSStringType> &rhs) {
-        for (const auto &rhs_elem : rhs.elements()) {
-            append(wcs2string(rhs_elem.contents), rhs_elem.separation);
+    /// Append a string \p str with separation type \p sep.
+    void append(std::string &&str, separation_type_t sep = separation_type_t::inferred) {
+        if (!try_add_size(str.size())) return;
+        // Try merging with the last element.
+        if (sep == separation_type_t::inferred && last_inferred()) {
+            elements_.back().contents.append(str);
+        } else {
+            elements_.emplace_back(std::move(str), sep);
         }
     }
+
+    /// Remove all elements and unset the discard flag.
+    void clear() {
+        elements_.clear();
+        contents_size_ = 0;
+        discard_ = false;
+    }
+
+   private:
+    /// \return true if our last element has an inferred separation type.
+    bool last_inferred() const {
+        return !elements_.empty() && !elements_.back().is_explicitly_separated();
+    }
+
+    /// If our last element has an inferred separation, return a pointer to it; else nullptr.
+    /// This is useful for appending one inferred separation to another.
+    element_t *last_if_inferred() {
+        if (!elements_.empty() && !elements_.back().is_explicitly_separated()) {
+            return &elements_.back();
+        }
+        return nullptr;
+    }
+
+    /// Mark that we are about to add the given size \p delta to the buffer. \return true if we
+    /// succeed, false if we exceed buffer_limit.
+    bool try_add_size(size_t delta) {
+        if (discard_) return false;
+        size_t proposed_size = contents_size_ + delta;
+        if ((proposed_size < delta) || (buffer_limit_ > 0 && proposed_size > buffer_limit_)) {
+            clear();
+            discard_ = true;
+            return false;
+        }
+        contents_size_ = proposed_size;
+        return true;
+    }
+
+    /// Limit on how much data we'll buffer. Zero means no limit.
+    size_t buffer_limit_;
+
+    /// Current size of all contents.
+    size_t contents_size_{0};
+
+    /// List of buffer elements.
+    std::vector<element_t> elements_;
+
+    /// True if we're discarding input because our buffer_limit has been exceeded.
+    bool discard_{false};
 };
 
 /// Describes what type of IO operation an io_data_t represents.
@@ -284,14 +276,11 @@ class io_bufferfill_t final : public io_data_t {
     /// \returns nullptr on failure, e.g. too many open fds.
     ///
     /// \param target the fd which this will be dup2'd to - typically stdout.
-    /// \param conflicts A set of fds. The function ensures that any pipe it makes does
-    /// not conflict with an fd redirection in this list.
-    static shared_ptr<io_bufferfill_t> create(const fd_set_t &conflicts, size_t buffer_limit = 0,
-                                              int target = STDOUT_FILENO);
+    static shared_ptr<io_bufferfill_t> create(size_t buffer_limit = 0, int target = STDOUT_FILENO);
 
     /// Reset the receiver (possibly closing the write end of the pipe), and complete the fillthread
     /// of the buffer. \return the buffer.
-    static std::shared_ptr<io_buffer_t> finish(std::shared_ptr<io_bufferfill_t> &&filler);
+    static separated_buffer_t finish(std::shared_ptr<io_bufferfill_t> &&filler);
 };
 
 class output_stream_t;
@@ -299,56 +288,48 @@ class output_stream_t;
 /// An io_buffer_t is a buffer which can populate itself by reading from an fd.
 /// It is not an io_data_t.
 class io_buffer_t {
-   private:
-    friend io_bufferfill_t;
-
-    /// Buffer storing what we have read.
-    separated_buffer_t<std::string> buffer_;
-
-    /// Atomic flag indicating our fillthread should shut down.
-    relaxed_atomic_bool_t shutdown_fillthread_{false};
-
-    /// The future allowing synchronization with the background fillthread, if the fillthread is
-    /// running. The fillthread fulfills the corresponding promise when it exits.
-    std::future<void> fillthread_waiter_{};
-
-    /// Lock for appending.
-    std::mutex append_lock_{};
-
-    /// Read some, filling the buffer. The append lock must be held.
-    /// \return positive on success, 0 if closed, -1 on error (in which case errno will be set).
-    ssize_t read_once(int fd);
-
-    /// Begin the fill operation, reading from the given fd in the background.
-    void begin_filling(autoclose_fd_t readfd);
-
-    /// End the background fillthread operation.
-    void complete_background_fillthread();
-
-    /// Helper to return whether the fillthread is running.
-    bool fillthread_running() const { return fillthread_waiter_.valid(); }
-
    public:
     explicit io_buffer_t(size_t limit) : buffer_(limit) {}
 
     ~io_buffer_t();
 
-    /// Access the underlying buffer.
-    /// This requires that the background fillthread be none.
-    const separated_buffer_t<std::string> &buffer() const {
-        assert(!fillthread_running() && "Cannot access buffer during background fill");
-        return buffer_;
+    /// Append a string to the buffer.
+    void append(std::string &&str, separation_type_t type = separation_type_t::inferred) {
+        buffer_.acquire()->append(std::move(str), type);
     }
 
-    /// Function to append to the buffer.
-    void append(const char *ptr, size_t count) {
-        scoped_lock locker(append_lock_);
-        buffer_.append(ptr, ptr + count);
-    }
+    /// \return true if output was discarded due to exceeding the read limit.
+    bool discarded() { return buffer_.acquire()->discarded(); }
 
-    /// Appends data from a given separated buffer.
-    /// Marks the receiver as discarded if the buffer was discarded.
-    void append_from_wide_buffer(const separated_buffer_t<wcstring> &input);
+   private:
+    /// Read some, filling the buffer. The buffer is passed in to enforce that the append lock is
+    /// held. \return positive on success, 0 if closed, -1 on error (in which case errno will be
+    /// set).
+    ssize_t read_once(int fd, acquired_lock<separated_buffer_t> &buff);
+
+    /// Begin the fill operation, reading from the given fd in the background.
+    void begin_filling(autoclose_fd_t readfd);
+
+    /// End the background fillthread operation, and return the buffer, transferring ownership.
+    separated_buffer_t complete_background_fillthread_and_take_buffer();
+
+    /// Helper to return whether the fillthread is running.
+    bool fillthread_running() const { return fill_waiter_.get() != nullptr; }
+
+    /// Buffer storing what we have read.
+    owning_lock<separated_buffer_t> buffer_;
+
+    /// Atomic flag indicating our fillthread should shut down.
+    relaxed_atomic_bool_t shutdown_fillthread_{false};
+
+    /// A promise, allowing synchronization with the background fill operation.
+    /// The operation has a reference to this as well, and fulfills this promise when it exits.
+    std::shared_ptr<std::promise<void>> fill_waiter_{};
+
+    /// The item id of our background fillthread fd monitor item.
+    uint64_t item_id_{0};
+
+    friend io_bufferfill_t;
 };
 
 using io_data_ref_t = std::shared_ptr<const io_data_t>;
@@ -373,32 +354,7 @@ class io_chain_t : public std::vector<io_data_ref_t> {
 
     /// Output debugging information to stderr.
     void print() const;
-
-    /// \return the set of redirected FDs.
-    fd_set_t fd_set() const;
 };
-
-/// Helper type returned from making autoclose pipes.
-struct autoclose_pipes_t {
-    /// Read end of the pipe.
-    autoclose_fd_t read;
-
-    /// Write end of the pipe.
-    autoclose_fd_t write;
-
-    autoclose_pipes_t() = default;
-    autoclose_pipes_t(autoclose_fd_t r, autoclose_fd_t w)
-        : read(std::move(r)), write(std::move(w)) {}
-};
-/// Call pipe(), populating autoclose fds, avoiding conflicts.
-/// The pipes are marked CLO_EXEC.
-/// \return pipes on success, none() on error.
-maybe_t<autoclose_pipes_t> make_autoclose_pipes(const fd_set_t &fdset);
-
-/// If the given fd is present in \p fdset, duplicates it repeatedly until an fd not used in the set
-/// is found or we run out. If we return a new fd or an error, closes the old one. Marks the fd as
-/// cloexec. \returns invalid fd on failure (in which case the given fd is still closed).
-autoclose_fd_t move_fd_to_unused(autoclose_fd_t fd, const fd_set_t &fdset);
 
 /// Base class representing the output that a builtin can generate.
 /// This has various subclasses depending on the ultimate output destination.
@@ -407,8 +363,14 @@ class output_stream_t {
     /// Required override point. The output stream receives a string \p s with \p amt chars.
     virtual void append(const wchar_t *s, size_t amt) = 0;
 
-    /// \return the separated buffer if this holds one, otherwise nullptr.
-    virtual const separated_buffer_t<wcstring> *get_separated_buffer() const { return nullptr; }
+    /// \return any internally buffered contents.
+    /// This is only implemented for a string_output_stream; others flush data to their underlying
+    /// receiver (fd, or separated buffer) immediately and so will return an empty string here.
+    virtual const wcstring &contents() const;
+
+    /// Flush any unwritten data to the underlying device, and return an error code.
+    /// A 0 code indicates success. The base implementation returns 0.
+    virtual int flush_and_check_error();
 
     /// An optional override point. This is for explicit separation.
     virtual void append_with_separation(const wchar_t *s, size_t len, separation_type_t type);
@@ -427,7 +389,7 @@ class output_stream_t {
     void push_back(wchar_t c) { append(c); }
 
     // Append data from a narrow buffer, widening it.
-    void append_narrow_buffer(const separated_buffer_t<std::string> &buffer);
+    void append_narrow_buffer(const separated_buffer_t &buffer);
 
     /// Append a format string.
     void append_format(const wchar_t *format, ...) {
@@ -459,6 +421,8 @@ class fd_output_stream_t final : public output_stream_t {
     /// Construct from a file descriptor, which must be nonegative.
     explicit fd_output_stream_t(int fd) : fd_(fd) { assert(fd_ >= 0 && "Invalid fd"); }
 
+    int flush_and_check_error() override;
+
     void append(const wchar_t *s, size_t amt) override;
 
    private:
@@ -469,25 +433,34 @@ class fd_output_stream_t final : public output_stream_t {
     bool errored_{false};
 };
 
-/// An output stream for builtins which buffers into a separated buffer.
+/// A simple output stream which buffers into a wcstring.
+class string_output_stream_t final : public output_stream_t {
+   public:
+    string_output_stream_t() = default;
+    void append(const wchar_t *s, size_t amt) override;
+
+    /// \return the wcstring containing the output.
+    const wcstring &contents() const override;
+
+   private:
+    wcstring contents_;
+};
+
+/// An output stream for builtins which writes into a separated buffer.
 class buffered_output_stream_t final : public output_stream_t {
    public:
-    explicit buffered_output_stream_t(size_t buffer_limit) : buffer_(buffer_limit) {}
+    explicit buffered_output_stream_t(std::shared_ptr<io_buffer_t> buffer)
+        : buffer_(std::move(buffer)) {
+        assert(buffer_ && "Buffer must not be null");
+    }
 
     void append(const wchar_t *s, size_t amt) override;
     void append_with_separation(const wchar_t *s, size_t len, separation_type_t type) override;
-
-    wcstring contents() const { return buffer_.newline_serialized(); }
-
-    /// Access the buffer.
-    separated_buffer_t<wcstring> &buffer() { return buffer_; }
-    const separated_buffer_t<wcstring> &buffer() const { return buffer_; }
-
-    const separated_buffer_t<wcstring> *get_separated_buffer() const override { return &buffer_; }
+    int flush_and_check_error() override;
 
    private:
-    /// Storage for our data.
-    separated_buffer_t<wcstring> buffer_;
+    /// The buffer we are filling.
+    std::shared_ptr<io_buffer_t> buffer_;
 };
 
 struct io_streams_t {
@@ -496,11 +469,13 @@ struct io_streams_t {
     output_stream_t &err;
 
     // fd representing stdin. This is not closed by the destructor.
+    // Note: if stdin is explicitly closed by `<&-` then this is -1!
     int stdin_fd{-1};
 
     // Whether stdin is "directly redirected," meaning it is the recipient of a pipe (foo | cmd) or
-    // direct redirection (cmd < foo.txt). An "indirect redirection" would be e.g. begin ; cmd ; end
-    // < foo.txt
+    // direct redirection (cmd < foo.txt). An "indirect redirection" would be e.g.
+    //    begin ; cmd ; end < foo.txt
+    // If stdin is closed (cmd <&-) this is false.
     bool stdin_is_directly_redirected{false};
 
     // Indicates whether stdout and stderr are specifically piped.

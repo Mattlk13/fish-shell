@@ -262,9 +262,6 @@ enum class pipeline_position_t {
 /// Error issued on $@.
 #define ERROR_NOT_ARGV_AT _(L"$@ is not supported. In fish, please use $argv.")
 
-/// Error issued on $(...).
-#define ERROR_BAD_VAR_SUBCOMMAND1 _(L"$(...) is not supported. In fish, please use '(%ls)'.")
-
 /// Error issued on $*.
 #define ERROR_NOT_ARGV_STAR _(L"$* is not supported. In fish, please use $argv.")
 
@@ -278,5 +275,9 @@ enum class pipeline_position_t {
 /// Error message for a command like `time foo &`.
 #define ERROR_TIME_BACKGROUND \
     _(L"'time' is not supported for background jobs. Consider using 'command time'.")
+
+/// Error issued on { echo; echo }.
+#define ERROR_NO_BRACE_GROUPING \
+    _(L"'{ ... }' is not supported for grouping commands. Please use 'begin; ...; end'")
 
 #endif

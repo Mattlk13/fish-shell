@@ -1,4 +1,7 @@
 #RUN: %fish %s
+# OpenBSD doesn't do hex numbers in str/wcstod (like C99 requires).
+# So let's skip this.
+#REQUIRES: test "$(uname)" != OpenBSD
 # Validate basic expressions
 math 3 / 2
 # CHECK: 1.5
@@ -32,6 +35,12 @@ math -- -4 / 2
 # CHECK: -2
 math -- '-4 * 2'
 # CHECK: -8
+
+# Validate max and min
+math 'max(1,2)'
+math 'min(1,2)'
+# CHECK: 2
+# CHECK: 1
 
 # Validate some rounding functions
 math 'round(3/2)'
@@ -100,10 +109,10 @@ not math 'ncr(1)'
 # CHECKERR: 'ncr(1)'
 # CHECKERR:       ^
 
-# There is no "max" function.
-not math 'max()'
+# There is no "blah" function.
+not math 'blah()'
 # CHECKERR: math: Error: Unknown function
-# CHECKERR: 'max()'
+# CHECKERR: 'blah()'
 # CHECKERR:    ^
 
 math n + 4
@@ -165,9 +174,7 @@ math "bitor(37 ^ 5, 255)"
 # CHECK: 69343999
 
 math 'log 16'
-# CHECKERR: math: Error: Missing opening parenthesis
-# CHECKERR: 'log 16'
-# CHECKERR:       ^
+# CHECK: 1.20412
 
 math 'log(16'
 # CHECKERR: math: Error: Missing closing parenthesis
@@ -186,3 +193,29 @@ math --base notabase
 # CHECKERR: math: 'notabase' is not a valid base value
 echo $status
 # CHECK: 2
+
+math 'log2(8)'
+# CHECK: 3
+
+# same as sin(cos(2 x pi))
+math sin cos 2 x pi
+# CHECK: 0.841471
+# Inner function binds stronger, so this is interpreted as
+# pow(sin(3,5))
+
+math pow sin 3, 5
+# CHECKERR: math: Error: Too many arguments
+# CHECKERR: 'pow sin 3, 5'
+# CHECKERR: ^
+
+math sin pow 3, 5
+# CHECK: -0.890009
+
+math pow 2, cos -pi
+# CHECK: 0.5
+
+# pow(2*cos(-pi), 2)
+# i.e. 2^2
+# i.e. 4
+math pow 2 x cos'(-pi)', 2
+# CHECK: 4

@@ -144,47 +144,24 @@ bool outputter_t::write_color(rgb_color_t color, bool is_fg) {
 /// - Lastly we may need to write set_a_background or set_a_foreground to set the other half of the
 /// color pair to what it should be.
 ///
-/// \param c Foreground color.
-/// \param c2 Background color.
-void outputter_t::set_color(rgb_color_t c, rgb_color_t c2) {
-    if (!cur_term) return;
+/// \param fg Foreground color.
+/// \param bg Background color.
+void outputter_t::set_color(rgb_color_t fg, rgb_color_t bg) {
+    // Test if we have at least basic support for setting fonts, colors and related bits - otherwise
+    // just give up...
+    if (!cur_term || !exit_attribute_mode) return;
 
     const rgb_color_t normal = rgb_color_t::normal();
     bool bg_set = false, last_bg_set = false;
-    bool is_bold = false;
-    bool is_underline = false;
-    bool is_italics = false;
-    bool is_dim = false;
-    bool is_reverse = false;
+    bool is_bold = fg.is_bold() || bg.is_bold();
+    bool is_underline = fg.is_underline() || bg.is_underline();
+    bool is_italics = fg.is_italics() || bg.is_italics();
+    bool is_dim = fg.is_dim() || bg.is_dim();
+    bool is_reverse = fg.is_reverse() || bg.is_reverse();
 
-    // Test if we have at least basic support for setting fonts, colors and related bits - otherwise
-    // just give up...
-    if (!exit_attribute_mode) {
-        return;
-    }
-
-    is_bold |= c.is_bold();
-    is_bold |= c2.is_bold();
-
-    is_underline |= c.is_underline();
-    is_underline |= c2.is_underline();
-
-    is_italics |= c.is_italics();
-    is_italics |= c2.is_italics();
-
-    is_dim |= c.is_dim();
-    is_dim |= c2.is_dim();
-
-    is_reverse |= c.is_reverse();
-    is_reverse |= c2.is_reverse();
-
-    if (c.is_reset() || c2.is_reset()) {
-        c = c2 = normal;
-        was_bold = false;
-        was_underline = false;
-        was_italics = false;
-        was_dim = false;
-        was_reverse = false;
+    if (fg.is_reset() || bg.is_reset()) {
+        fg = bg = normal;
+        reset_modes();
         // If we exit attibute mode, we must first set a color, or previously colored text might
         // lose it's color. Terminals are weird...
         write_foreground_color(*this, 0);
@@ -192,51 +169,26 @@ void outputter_t::set_color(rgb_color_t c, rgb_color_t c2) {
         return;
     }
 
-    if (was_bold && !is_bold) {
-        // Only way to exit bold mode is a reset of all attributes.
+    if ((was_bold && !is_bold) || (was_dim && !is_dim) || (was_reverse && !is_reverse)) {
+        // Only way to exit bold/dim/reverse mode is a reset of all attributes.
         writembs(*this, exit_attribute_mode);
         last_color = normal;
         last_color2 = normal;
-        was_bold = false;
-        was_underline = false;
-        was_italics = false;
-        was_dim = false;
-        was_reverse = false;
+        reset_modes();
     }
 
-    if (was_dim && !is_dim) {
-        // Only way to exit dim mode is a reset of all attributes.
-        writembs(*this, exit_attribute_mode);
-        last_color = normal;
-        last_color2 = normal;
-        was_bold = false;
-        was_underline = false;
-        was_italics = false;
-        was_dim = false;
-        was_reverse = false;
-    }
-
-    if (was_reverse && !is_reverse) {
-        // Only way to exit reverse mode is a reset of all attributes.
-        writembs(*this, exit_attribute_mode);
-        last_color = normal;
-        last_color2 = normal;
-        was_bold = false;
-        was_underline = false;
-        was_italics = false;
-        was_dim = false;
-        was_reverse = false;
-    }
-
-    if (!last_color2.is_normal() && !last_color2.is_reset()) {
+    if (!last_color2.is_special()) {
         // Background was set.
+        // "Special" here refers to the special "normal", "reset" and "none" colors,
+        // that really jus disable the background.
         last_bg_set = true;
     }
 
-    if (!c2.is_normal()) {
+    if (!bg.is_special()) {
         // Background is set.
         bg_set = true;
-        if (c == c2) c = (c2 == rgb_color_t::white()) ? rgb_color_t::black() : rgb_color_t::white();
+        if (fg == bg)
+            fg = (bg == rgb_color_t::white()) ? rgb_color_t::black() : rgb_color_t::white();
     }
 
     if (enter_bold_mode && enter_bold_mode[0] != '\0') {
@@ -248,11 +200,7 @@ void outputter_t::set_color(rgb_color_t c, rgb_color_t c2) {
         if (!bg_set && last_bg_set) {
             // Background color changed and is no longer set, so we exit bold mode.
             writembs(*this, exit_attribute_mode);
-            was_bold = false;
-            was_underline = false;
-            was_italics = false;
-            was_dim = false;
-            was_reverse = false;
+            reset_modes();
             // We don't know if exit_attribute_mode resets colors, so we set it to something known.
             if (write_foreground_color(*this, 0)) {
                 last_color = rgb_color_t::black();
@@ -260,26 +208,22 @@ void outputter_t::set_color(rgb_color_t c, rgb_color_t c2) {
         }
     }
 
-    if (last_color != c) {
-        if (c.is_normal()) {
+    if (last_color != fg) {
+        if (fg.is_normal()) {
             write_foreground_color(*this, 0);
             writembs(*this, exit_attribute_mode);
 
             last_color2 = rgb_color_t::normal();
-            was_bold = false;
-            was_underline = false;
-            was_italics = false;
-            was_dim = false;
-            was_reverse = false;
-        } else if (!c.is_special()) {
-            write_color(c, true /* foreground */);
+            reset_modes();
+        } else if (!fg.is_special()) {
+            write_color(fg, true /* foreground */);
         }
     }
 
-    last_color = c;
+    last_color = fg;
 
-    if (last_color2 != c2) {
-        if (c2.is_normal()) {
+    if (last_color2 != bg) {
+        if (bg.is_normal()) {
             write_background_color(*this, 0);
 
             writembs(*this, exit_attribute_mode);
@@ -287,15 +231,11 @@ void outputter_t::set_color(rgb_color_t c, rgb_color_t c2) {
                 write_color(last_color, true /* foreground */);
             }
 
-            was_bold = false;
-            was_underline = false;
-            was_italics = false;
-            was_dim = false;
-            was_reverse = false;
-            last_color2 = c2;
-        } else if (!c2.is_special()) {
-            write_color(c2, false /* not foreground */);
-            last_color2 = c2;
+            reset_modes();
+            last_color2 = bg;
+        } else if (!bg.is_special()) {
+            write_color(bg, false /* not foreground */);
+            last_color2 = bg;
         }
     }
 
@@ -370,64 +310,9 @@ int outputter_t::term_puts(const char *str, int affcnt) {
     return res;
 }
 
-/// Write a wide character to the outputter. This should only be used when writing characters from
-/// user supplied strings. This is needed due to our use of the ENCODE_DIRECT_BASE mechanism to
-/// allow the user to specify arbitrary byte values to be output. Such as in a `printf` invocation
-/// that includes literal byte values such as `\x1B`. This should not be used for writing non-user
-/// supplied characters.
-int outputter_t::writech(wint_t ch) {
-    char buff[MB_LEN_MAX + 1];
-    size_t len;
-
-    if (ch >= ENCODE_DIRECT_BASE && ch < ENCODE_DIRECT_BASE + 256) {
-        buff[0] = ch - ENCODE_DIRECT_BASE;
-        len = 1;
-    } else if (MB_CUR_MAX == 1) {
-        // single-byte locale (C/POSIX/ISO-8859)
-        // If `wc` contains a wide character we emit a question-mark.
-        buff[0] = ch & ~0xFF ? '?' : ch;
-        len = 1;
-    } else {
-        mbstate_t state = {};
-        len = std::wcrtomb(buff, ch, &state);
-        if (len == static_cast<size_t>(-1)) {
-            return 1;
-        }
-    }
-    this->writestr(buff, len);
-    return 0;
-}
-
-/// Write a wide character string to stdout. This should not be used to output things like warning
-/// messages; just use debug() or std::fwprintf() for that. It should only be used to output user
-/// supplied strings that might contain literal bytes; e.g., "\342\224\214" from issue #1894. This
-/// is needed because those strings may contain chars specially encoded using ENCODE_DIRECT_BASE.
-void outputter_t::writestr(const wchar_t *str) {
-    assert(str && "Empty input string");
-
-    if (MB_CUR_MAX == 1) {
-        // Single-byte locale (C/POSIX/ISO-8859).
-        while (*str) writech(*str++);
-        return;
-    }
-    size_t len = wcstombs(nullptr, str, 0);  // figure amount of space needed
-    if (len == static_cast<size_t>(-1)) {
-        FLOGF(output_invalid, L"Tried to print invalid wide character string");
-        return;
-    }
-
-    // Convert the string.
-    len++;
-    char *buffer, static_buffer[256];
-    if (len <= sizeof static_buffer) {
-        buffer = static_buffer;
-    } else {
-        buffer = new char[len];
-    }
-
-    int new_len = wcstombs(buffer, str, len);
-    this->writestr(buffer, new_len);
-    if (buffer != static_buffer) delete[] buffer;
+void outputter_t::writestr(const wchar_t *str, size_t len) {
+    wcs2string_appending(str, len, &contents_);
+    maybe_flush();
 }
 
 outputter_t &outputter_t::stdoutput() {
@@ -468,6 +353,7 @@ rgb_color_t best_color(const std::vector<rgb_color_t> &candidates, color_support
 
 /// Return the internal color code representing the specified color.
 /// TODO: This code should be refactored to enable sharing with builtin_set_color.
+///       In particular, the argument parsing still isn't fully capable.
 rgb_color_t parse_color(const env_var_t &var, bool is_background) {
     bool is_bold = false;
     bool is_underline = false;
@@ -481,17 +367,28 @@ rgb_color_t parse_color(const env_var_t &var, bool is_background) {
     // wcslen is not available as constexpr
     size_t prefix_len = wcslen(prefix);
 
+    bool next_is_background = false;
     wcstring color_name;
     for (const wcstring &next : var.as_list()) {
         color_name.clear();
         if (is_background) {
-            // Look for something like "--background=red".
-            if (string_prefixes_string(prefix, next)) {
+            if (color_name.empty() && next_is_background) {
+                color_name = next;
+                next_is_background = false;
+            } else if (string_prefixes_string(prefix, next)) {
+                // Look for something like "--background=red".
                 color_name = wcstring(next, prefix_len);
-            }
-            // Reverse should be meaningful in either context
-            if (next == L"--reverse" || next == L"-r") {
+            } else if (next == L"--background" || next == L"-b") {
+                // Without argument attached the next token is the color
+                // - if it's another option it's an error.
+                next_is_background = true;
+            } else if (next == L"--reverse" || next == L"-r") {
+                // Reverse should be meaningful in either context
                 is_reverse = true;
+            } else if (string_prefixes_string(L"-b", next)) {
+                // Look for something like "-bred".
+                // Yes, that length is hardcoded.
+                color_name = wcstring(next, 2);
             }
         } else {
             if (next == L"--bold" || next == L"-o")

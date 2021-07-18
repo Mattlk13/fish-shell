@@ -57,44 +57,31 @@ void io_bufferfill_t::print() const {
     std::fwprintf(stderr, L"bufferfill %d -> %d\n", write_fd_.fd(), fd);
 }
 
-void io_buffer_t::append_from_wide_buffer(const separated_buffer_t<wcstring> &input) {
-    if (input.elements().empty() && !input.discarded()) return;
-    scoped_lock locker(append_lock_);
-    if (buffer_.discarded()) return;
-    if (input.discarded()) {
-        buffer_.set_discard();
-        return;
-    }
-    buffer_.append_wide_buffer(input);
-}
-
-ssize_t io_buffer_t::read_once(int fd) {
+ssize_t io_buffer_t::read_once(int fd, acquired_lock<separated_buffer_t> &buffer) {
     assert(fd >= 0 && "Invalid fd");
-    ASSERT_IS_LOCKED(append_lock_);
     errno = 0;
-    char buff[4096 * 4];
+    char bytes[4096 * 4];
 
     // We want to swallow EINTR only; in particular EAGAIN needs to be returned back to the caller.
-    ssize_t ret;
+    ssize_t amt;
     do {
-        ret = read(fd, buff, sizeof buff);
-    } while (ret < 0 && errno == EINTR);
-    if (ret < 0 && errno != EAGAIN) {
+        amt = read(fd, bytes, sizeof bytes);
+    } while (amt < 0 && errno == EINTR);
+    if (amt < 0 && errno != EAGAIN) {
         wperror(L"read");
-    } else if (ret > 0) {
-        buffer_.append(&buff[0], &buff[ret]);
+    } else if (amt > 0) {
+        buffer->append(bytes, static_cast<size_t>(amt));
     }
-    return ret;
+    return amt;
 }
 
 void io_buffer_t::begin_filling(autoclose_fd_t fd) {
-    ASSERT_IS_MAIN_THREAD();
     assert(!fillthread_running() && "Already have a fillthread");
 
     // We want to fill buffer_ by reading from fd. fd is the read end of a pipe; the write end is
     // owned by another process, or something else writing in fish.
     // Pass fd to an fd_monitor. It will add fd to its select() loop, and give us a callback when
-    // the fd is readable, or when our timeout is hit. The usual path is that we will get called
+    // the fd is readable, or when our item is poked. The usual path is that we will get called
     // back, read a bit from the fd, and append it to the buffer. Eventually the write end of the
     // pipe will be closed - probably the other process exited - and fd will be widowed; read() will
     // then return 0 and we will stop reading.
@@ -102,47 +89,40 @@ void io_buffer_t::begin_filling(autoclose_fd_t fd) {
     // e.g.:
     //   cmd ( background & ; echo hi )
     // Here the background process will inherit the write end of the pipe and hold onto it forever.
-    // In this case, we will hit the timeout on waiting for more data and notice that the shutdown
-    // flag is set (this indicates that the command substitution is done); in this case we will read
-    // until we get EAGAIN and then give up.
+    // In this case, when complete_background_fillthread() is called, the callback will be invoked
+    // with item_wake_reason_t::poke, and we will notice that the shutdown flag is set (this
+    // indicates that the command substitution is done); in this case we will read until we get
+    // EAGAIN and then give up.
 
-    // Construct a promise that can go into our background thread.
+    // Construct a promise. We will fulfill it in our fill thread, and wait for it in
+    // complete_background_fillthread(). Note that TSan complains if the promise's dtor races with
+    // the future's call to wait(), so we store the promise, not just its future (#7681).
     auto promise = std::make_shared<std::promise<void>>();
-
-    // Get the future associated with our promise.
-    // Note this should only ever be called once.
-    fillthread_waiter_ = promise->get_future();
-
-    // 100 msec poll rate. Note that in most cases, the write end of the pipe will be closed so
-    // select() will return; the polling is important only for weird cases like a background process
-    // launched in a command substitution.
-    constexpr uint64_t usec_per_msec = 1000;
-    uint64_t poll_usec = 100 * usec_per_msec;
+    this->fill_waiter_ = promise;
 
     // Run our function to read until the receiver is closed.
     // It's OK to capture 'this' by value because 'this' waits for the promise in its dtor.
     fd_monitor_item_t item;
     item.fd = std::move(fd);
-    item.timeout_usec = poll_usec;
-    item.callback = [this, promise](autoclose_fd_t &fd, bool timed_out) {
+    item.callback = [this, promise](autoclose_fd_t &fd, item_wake_reason_t reason) {
         ASSERT_IS_BACKGROUND_THREAD();
-        // Only check the shutdown flag if we timed out.
+        // Only check the shutdown flag if we timed out or were poked.
         // It's important that if select() indicated we were readable, that we call select() again
         // allowing it to time out. Note the typical case is that the fd will be closed, in which
         // case select will return immediately.
         bool done = false;
-        if (!timed_out) {
+        if (reason == item_wake_reason_t::readable) {
             // select() reported us as readable; read a bit.
-            scoped_lock locker(append_lock_);
-            ssize_t ret = read_once(fd.fd());
+            auto buffer = buffer_.acquire();
+            ssize_t ret = read_once(fd.fd(), buffer);
             done = (ret == 0 || (ret < 0 && errno != EAGAIN));
         } else if (shutdown_fillthread_) {
             // Here our caller asked us to shut down; read while we keep getting data.
             // This will stop when the fd is closed or if we get EAGAIN.
-            scoped_lock locker(append_lock_);
+            auto buffer = buffer_.acquire();
             ssize_t ret;
             do {
-                ret = read_once(fd.fd());
+                ret = read_once(fd.fd(), buffer);
             } while (ret > 0);
             done = true;
         }
@@ -151,26 +131,33 @@ void io_buffer_t::begin_filling(autoclose_fd_t fd) {
             promise->set_value();
         }
     };
-    fd_monitor().add(std::move(item));
+    this->item_id_ = fd_monitor().add(std::move(item));
 }
 
-void io_buffer_t::complete_background_fillthread() {
-    ASSERT_IS_MAIN_THREAD();
+separated_buffer_t io_buffer_t::complete_background_fillthread_and_take_buffer() {
+    // Mark that our fillthread is done, then wake it up.
     assert(fillthread_running() && "Should have a fillthread");
+    assert(this->item_id_ > 0 && "Should have a valid item ID");
     shutdown_fillthread_ = true;
+    fd_monitor().poke_item(this->item_id_);
 
     // Wait for the fillthread to fulfill its promise, and then clear the future so we know we no
     // longer have one.
-    fillthread_waiter_.wait();
-    fillthread_waiter_ = {};
+    fill_waiter_->get_future().wait();
+    fill_waiter_.reset();
+
+    // Return our buffer, transferring ownership.
+    auto locked_buff = buffer_.acquire();
+    separated_buffer_t result = std::move(*locked_buff);
+    locked_buff->clear();
+    return result;
 }
 
-shared_ptr<io_bufferfill_t> io_bufferfill_t::create(const fd_set_t &conflicts, size_t buffer_limit,
-                                                    int target) {
+shared_ptr<io_bufferfill_t> io_bufferfill_t::create(size_t buffer_limit, int target) {
     assert(target >= 0 && "Invalid target fd");
 
     // Construct our pipes.
-    auto pipes = make_autoclose_pipes(conflicts);
+    auto pipes = make_autoclose_pipes();
     if (!pipes) {
         return nullptr;
     }
@@ -188,7 +175,7 @@ shared_ptr<io_bufferfill_t> io_bufferfill_t::create(const fd_set_t &conflicts, s
     return std::make_shared<io_bufferfill_t>(target, std::move(pipes->write), buffer);
 }
 
-std::shared_ptr<io_buffer_t> io_bufferfill_t::finish(std::shared_ptr<io_bufferfill_t> &&filler) {
+separated_buffer_t io_bufferfill_t::finish(std::shared_ptr<io_bufferfill_t> &&filler) {
     // The io filler is passed in. This typically holds the only instance of the write side of the
     // pipe used by the buffer's fillthread (except for that side held by other processes). Get the
     // buffer out of the bufferfill and clear the shared_ptr; this will typically widow the pipe.
@@ -196,8 +183,7 @@ std::shared_ptr<io_buffer_t> io_bufferfill_t::finish(std::shared_ptr<io_bufferfi
     assert(filler && "Null pointer in finish");
     auto buffer = filler->buffer();
     filler.reset();
-    buffer->complete_background_fillthread();
-    return buffer;
+    return buffer->complete_background_fillthread_and_take_buffer();
 }
 
 io_buffer_t::~io_buffer_t() {
@@ -286,61 +272,6 @@ void io_chain_t::print() const {
     }
 }
 
-fd_set_t io_chain_t::fd_set() const {
-    fd_set_t result;
-    for (const auto &io : *this) {
-        result.add(io->fd);
-    }
-    return result;
-}
-
-autoclose_fd_t move_fd_to_unused(autoclose_fd_t fd, const fd_set_t &fdset) {
-    if (!fd.valid() || !fdset.contains(fd.fd())) {
-        return fd;
-    }
-
-    // We have fd >= 0, and it's a conflict. dup it and recurse. Note that we recurse before
-    // anything is closed; this forces the kernel to give us a new one (or report fd exhaustion).
-    int tmp_fd;
-    do {
-        tmp_fd = dup(fd.fd());
-    } while (tmp_fd < 0 && errno == EINTR);
-
-    assert(tmp_fd != fd.fd());
-    if (tmp_fd < 0) {
-        // Likely fd exhaustion.
-        return autoclose_fd_t{};
-    }
-    // Ok, we have a new candidate fd. Recurse.
-    set_cloexec(tmp_fd);
-    return move_fd_to_unused(autoclose_fd_t{tmp_fd}, fdset);
-}
-
-maybe_t<autoclose_pipes_t> make_autoclose_pipes(const fd_set_t &fdset) {
-    int pipes[2] = {-1, -1};
-
-    if (pipe(pipes) < 0) {
-        FLOGF(warning, PIPE_ERROR);
-        wperror(L"pipe");
-        return none();
-    }
-    set_cloexec(pipes[0]);
-    set_cloexec(pipes[1]);
-
-    autoclose_fd_t read_end{pipes[0]};
-    autoclose_fd_t write_end{pipes[1]};
-
-    // Ensure we have no conflicts.
-    if (!fdset.empty()) {
-        read_end = move_fd_to_unused(std::move(read_end), fdset);
-        if (!read_end.valid()) return none();
-
-        write_end = move_fd_to_unused(std::move(write_end), fdset);
-        if (!write_end.valid()) return none();
-    }
-    return autoclose_pipes_t(std::move(read_end), std::move(write_end));
-}
-
 shared_ptr<const io_data_t> io_chain_t::io_for_fd(int fd) const {
     for (auto iter = rbegin(); iter != rend(); ++iter) {
         const auto &data = *iter;
@@ -351,7 +282,7 @@ shared_ptr<const io_data_t> io_chain_t::io_for_fd(int fd) const {
     return nullptr;
 }
 
-void output_stream_t::append_narrow_buffer(const separated_buffer_t<std::string> &buffer) {
+void output_stream_t::append_narrow_buffer(const separated_buffer_t &buffer) {
     for (const auto &rhs_elem : buffer.elements()) {
         append_with_separation(str2wcstring(rhs_elem.contents), rhs_elem.separation);
     }
@@ -364,21 +295,45 @@ void output_stream_t::append_with_separation(const wchar_t *s, size_t len, separ
     }
 }
 
+const wcstring &output_stream_t::contents() const { return g_empty_string; }
+
+int output_stream_t::flush_and_check_error() { return STATUS_CMD_OK; }
+
 void fd_output_stream_t::append(const wchar_t *s, size_t amt) {
     if (errored_) return;
     int res = wwrite_to_fd(s, amt, this->fd_);
     if (res < 0) {
         // TODO: this error is too aggressive, e.g. if we got SIGINT we should not complain.
-        wperror(L"write");
+        if (errno != EPIPE) {
+            wperror(L"write");
+        }
         errored_ = true;
     }
 }
 
+int fd_output_stream_t::flush_and_check_error() {
+    // Return a generic 1 on any write failure.
+    return errored_ ? STATUS_CMD_ERROR : STATUS_CMD_OK;
+}
+
 void null_output_stream_t::append(const wchar_t *, size_t) {}
 
-void buffered_output_stream_t::append(const wchar_t *s, size_t amt) { buffer_.append(s, s + amt); }
+void string_output_stream_t::append(const wchar_t *s, size_t amt) { contents_.append(s, amt); }
+
+const wcstring &string_output_stream_t::contents() const { return contents_; }
+
+void buffered_output_stream_t::append(const wchar_t *s, size_t amt) {
+    buffer_->append(wcs2string(s, amt));
+}
 
 void buffered_output_stream_t::append_with_separation(const wchar_t *s, size_t len,
                                                       separation_type_t type) {
-    buffer_.append(s, s + len, type);
+    buffer_->append(wcs2string(s, len), type);
+}
+
+int buffered_output_stream_t::flush_and_check_error() {
+    if (buffer_->discarded()) {
+        return STATUS_READ_TOO_MUCH;
+    }
+    return 0;
 }

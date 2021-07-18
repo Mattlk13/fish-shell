@@ -47,6 +47,8 @@ static const wchar_t *get_highlight_var_name(highlight_role_t role) {
             return L"fish_color_error";
         case highlight_role_t::command:
             return L"fish_color_command";
+        case highlight_role_t::keyword:
+            return L"fish_color_keyword";
         case highlight_role_t::statement_terminator:
             return L"fish_color_end";
         case highlight_role_t::param:
@@ -107,6 +109,8 @@ static highlight_role_t get_fallback(highlight_role_t role) {
             return highlight_role_t::normal;
         case highlight_role_t::command:
             return highlight_role_t::normal;
+        case highlight_role_t::keyword:
+            return highlight_role_t::command;
         case highlight_role_t::statement_terminator:
             return highlight_role_t::normal;
         case highlight_role_t::param:
@@ -468,7 +472,7 @@ bool autosuggest_validate_from_history(const history_item_t &item,
     }
 
     // Did the historical command have arguments that look like paths, which aren't paths now?
-    if (!all_paths_are_valid(item.get_required_paths(), working_directory)) {
+    if (!all_paths_are_valid(item.get_required_paths(), ctx)) {
         return false;
     }
 
@@ -490,6 +494,9 @@ static size_t color_variable(const wchar_t *in, size_t in_len,
         wchar_t next = in[idx + 1];
         if (next == L'$' || valid_var_name_char(next)) {
             colors[idx] = highlight_role_t::operat;
+        } else if (next == L'(') {
+            colors[idx] = highlight_role_t::operat;
+            return idx + 1;
         } else {
             colors[idx] = highlight_role_t::error;
         }
@@ -504,20 +511,18 @@ static size_t color_variable(const wchar_t *in, size_t in_len,
 
     // Handle a slice, up to dollar_count of them. Note that we currently don't do any validation of
     // the slice's contents, e.g. $foo[blah] will not show an error even though it's invalid.
-    for (size_t slice_count = 0; slice_count < dollar_count && in[idx] == L'['; slice_count++) {
-        wchar_t *slice_begin = nullptr, *slice_end = nullptr;
-        int located = parse_util_locate_slice(in + idx, &slice_begin, &slice_end, false);
-        if (located == 1) {
-            size_t slice_begin_idx = slice_begin - in, slice_end_idx = slice_end - in;
-            assert(slice_end_idx > slice_begin_idx);
-            colors[slice_begin_idx] = highlight_role_t::operat;
-            colors[slice_end_idx] = highlight_role_t::operat;
-            idx = slice_end_idx + 1;
-        } else if (located == 0) {
+    for (size_t slice_count = 0; slice_count < dollar_count; slice_count++) {
+        long slice_len = parse_util_slice_length(in + idx);
+        if (slice_len > 0) {
+            size_t slice_ulen = static_cast<size_t>(slice_len);
+            colors[idx] = highlight_role_t::operat;
+            colors[idx + slice_ulen - 1] = highlight_role_t::operat;
+            idx += slice_ulen;
+        } else if (slice_len == 0) {
             // not a slice
             break;
         } else {
-            assert(located < 0);
+            assert(slice_len < 0);
             // Syntax error. Normally the entire token is colored red for us, but inside a
             // double-quoted string that doesn't happen. As such, color the variable + the slice
             // start red. Coloring any more than that looks bad, unless we're willing to try and
@@ -780,6 +785,9 @@ class highlighter_t {
     // The resulting colors.
     using color_array_t = std::vector<highlight_spec_t>;
     color_array_t color_array;
+    // A stack of variables that the current commandline probably defines.  We mark redirections
+    // as valid if they use one of these variables, to avoid marking valid targets as error.
+    std::vector<wcstring> pending_variables;
 
     // Flags we use for AST parsing.
     static constexpr parse_tree_flags_t ast_flags =
@@ -814,6 +822,7 @@ class highlighter_t {
     void visit(const ast::variable_assignment_t &varas);
     void visit(const ast::semi_nl_t &semi_nl);
     void visit(const ast::decorated_statement_t &stmt);
+    void visit(const ast::block_statement_t &header);
 
     // Visit an argument, perhaps knowing that our command is cd.
     void visit(const ast::argument_t &arg, bool cmd_is_cd = false);
@@ -896,7 +905,7 @@ void highlighter_t::color_as_argument(const ast::node_t &node) {
         // Highlight it recursively.
         highlighter_t cmdsub_highlighter(cmdsub_contents, this->ctx, this->working_directory,
                                          this->io_ok);
-        const color_array_t &subcolors = cmdsub_highlighter.highlight();
+        color_array_t subcolors = cmdsub_highlighter.highlight();
 
         // Copy out the subcolors back into our array.
         assert(subcolors.size() == cmdsub_contents.size());
@@ -910,6 +919,11 @@ void highlighter_t::color_as_argument(const ast::node_t &node) {
 static bool range_is_potential_path(const wcstring &src, const source_range_t &range,
                                     const operation_context_t &ctx,
                                     const wcstring &working_directory) {
+    // Skip strings exceeding PATH_MAX. See #7837.
+    // Note some paths may exceed PATH_MAX, but this is just for highlighting.
+    if (range.length > PATH_MAX) {
+        return false;
+    }
     // Get the node source, unescape it, and then pass it to is_potential_path along with the
     // working directory (as a one element list).
     bool result = false;
@@ -949,7 +963,7 @@ void highlighter_t::visit(const ast::keyword_base_t &kw) {
         case parse_keyword_t::kw_in:
         case parse_keyword_t::kw_switch:
         case parse_keyword_t::kw_while:
-            role = highlight_role_t::command;
+            role = highlight_role_t::keyword;
             break;
 
         case parse_keyword_t::kw_and:
@@ -1018,6 +1032,8 @@ void highlighter_t::visit(const ast::variable_assignment_t &varas) {
     if (auto where = variable_assignment_equals_pos(varas.source(this->buff))) {
         size_t equals_loc = varas.source_range().start + *where;
         this->color_array.at(equals_loc) = highlight_role_t::operat;
+        auto var_name = varas.source(this->buff).substr(0, *where);
+        this->pending_variables.push_back(std::move(var_name));
     }
 }
 
@@ -1057,13 +1073,35 @@ void highlighter_t::visit(const ast::decorated_statement_t &stmt) {
     // Color arguments and redirections.
     // Except if our command is 'cd' we have special logic for how arguments are colored.
     bool is_cd = (expanded_cmd == L"cd");
+    bool is_set = (expanded_cmd == L"set");
     for (const ast::argument_or_redirection_t &v : stmt.args_or_redirs) {
         if (v.is_argument()) {
+            if (is_set) {
+                auto arg = v.argument().source(this->buff);
+                if (valid_var_name(arg)) {
+                    this->pending_variables.push_back(std::move(arg));
+                    is_set = false;
+                }
+            }
             this->visit(v.argument(), is_cd);
         } else {
             this->visit(v.redirection());
         }
     }
+}
+
+void highlighter_t::visit(const ast::block_statement_t &block) {
+    this->visit(*block.header.contents.get());
+    this->visit(block.args_or_redirs);
+    const ast::node_t &bh = *block.header.contents;
+    size_t pending_variables_count = this->pending_variables.size();
+    if (const auto *fh = bh.try_as<ast::for_header_t>()) {
+        auto var_name = fh->var_name.source(this->buff);
+        pending_variables.push_back(std::move(var_name));
+    }
+    this->visit(block.jobs);
+    this->visit(block.end);
+    pending_variables.resize(pending_variables_count);
 }
 
 /// \return whether a string contains a command substitution.
@@ -1072,6 +1110,20 @@ static bool has_cmdsub(const wcstring &src) {
     size_t start = 0;
     size_t end = 0;
     return parse_util_locate_cmdsubst_range(src, &cursor, nullptr, &start, &end, true) != 0;
+}
+
+static bool contains_pending_variable(const std::vector<wcstring> &pending_variables,
+                                      const wcstring &haystack) {
+    for (const auto &var_name : pending_variables) {
+        size_t pos = -1;
+        while ((pos = haystack.find(var_name, pos + 1)) != wcstring::npos) {
+            if (pos == 0 || haystack.at(pos - 1) != L'$') continue;
+            size_t end = pos + var_name.size();
+            if (end < haystack.size() && valid_var_name_char(haystack.at(end))) continue;
+            return true;
+        }
+    }
+    return false;
 }
 
 void highlighter_t::visit(const ast::redirection_t &redir) {
@@ -1105,6 +1157,8 @@ void highlighter_t::visit(const ast::redirection_t &redir) {
         if (!this->io_ok) {
             // I/O is disallowed, so we don't have much hope of catching anything but gross
             // errors. Assume it's valid.
+            target_is_valid = true;
+        } else if (contains_pending_variable(this->pending_variables, target)) {
             target_is_valid = true;
         } else if (!expand_one(target, expand_flag::skip_cmdsubst, ctx)) {
             // Could not be expanded.

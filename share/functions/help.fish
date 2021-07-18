@@ -94,7 +94,7 @@ function help --description 'Show help for the fish shell'
 
     if not set -q fish_browser[1]
         printf (_ '%s: Could not find a web browser.\n') help
-        printf (_ 'Please set the variable $BROWSER or fish_help_browser and try again.\n\n')
+        printf (_ 'Please try `BROWSER=some_browser help`, `man fish-doc`, or `man fish-tutorial`.\n\n')
         return 1
     end
 
@@ -111,13 +111,57 @@ function help --description 'Show help for the fish shell'
         end
     end
 
+    # HACK: Hardcode all section titles for each page.
+    # This could possibly be automated.
+
+    # All sections in "language.html"
+    set -l langpages argument-handling autoloading-functions brace-expansion \
+        builtin-commands combining-different-expansions combining-lists-cartesian-product \
+        command-substitution comments conditions defining-aliases escaping-characters expand exporting-variables \
+        functions home-directory-expansion index-range-expansion input-output-redirection job-control lists \
+        loops-and-blocks more-on-universal-variables overriding-variables-for-a-single-command pager-color-variables \
+        path-variables piping quotes shell-variable-and-function-names \
+        shell-variables special-variables syntax-highlighting-variables syntax-overview \
+        terminology the-fish-language the-status-variable variable-expansion \
+        variable-scope variable-scope-for-functions variables-locale wildcards-globbing
+
+    # All sections in "interactive.html"
+    set -l interactivepages abbreviations autosuggestions command-line-editor configurable-greeting \
+        copy-and-paste-kill-ring custom-bindings directory-stack emacs-mode-commands \
+        help interactive-use multiline-editing navigating-directories private-mode \
+        programmable-prompt programmable-title searchable-command-history shared-bindings \
+        syntax-highlighting tab-completion vi-mode-command vi-mode-commands \
+        vi-mode-insert vi-mode-visual
+
+    set -l for_bash_pages arithmetic-expansion blocks-and-loops builtins-and-other-commands \
+        command-substitutions fish-for-bash-users heredocs process-substitution prompts \
+        quoting special-variables string-manipulation test-test variables wildcards-globs
+
+    set -l faqpages frequently-asked-questions how-can-i-use-as-a-shortcut-for-cd \
+        how-do-i-change-the-greeting-message how-do-i-check-whether-a-variable-is-defined \
+        how-do-i-check-whether-a-variable-is-not-empty how-do-i-customize-my-syntax-highlighting-colors \
+        how-do-i-get-the-exit-status-of-a-command how-do-i-make-fish-my-default-shell \
+        how-do-i-run-a-command-every-login-what-s-fish-s-equivalent-to-bashrc-or-profile how-do-i-run-a-command-from-history \
+        how-do-i-run-a-subcommand-the-backtick-doesn-t-work how-do-i-set-my-prompt \
+        how-do-i-set-or-clear-an-environment-variable i-accidentally-entered-a-directory-path-and-fish-changed-directory-what-happened \
+        i-m-getting-weird-graphical-glitches-a-staircase-effect-ghost-characters i-m-seeing-weird-output-before-each-prompt-when-using-screen-what-s-wrong \
+        my-command-pkg-config-gives-its-output-as-a-single-long-string my-command-prints-no-matches-for-wildcard-but-works-in-bash \
+        the-open-command-doesn-t-work uninstalling-fish \
+        what-is-the-equivalent-to-this-thing-from-bash-or-other-shells where-can-i-find-extra-tools-for-fish \
+        why-does-my-prompt-show-a-i why-doesn-t-history-substitution-etc-work \
+        why-doesn-t-set-ux-exported-universal-variables-seem-to-work why-won-t-ssh-scp-rsync-connect-properly-when-fish-is-my-login-shell
+
+
     set -l fish_help_page
     switch "$fish_help_item"
         case "."
             set fish_help_page "cmds/source.html"
         case globbing
-            set fish_help_page "index.html#expand"
-        case (__fish_print_commands)
+            set fish_help_page "language.html#expand"
+        case (builtin -n) (__fish_print_commands)
+            # If the docs aren't installed, __fish_print_commands won't print anything
+            # Since we document all our builtins, check those at least.
+            # The alternative is to create this list at build time.
             set fish_help_page "cmds/$fish_help_item.html"
         case 'completion-*'
             set fish_help_page "completions.html#$fish_help_item"
@@ -125,26 +169,42 @@ function help --description 'Show help for the fish shell'
             set fish_help_page "tutorial.html#"(string sub -s 5 -- $fish_help_item | string replace -a -- _ -)
         case tutorial
             set fish_help_page "tutorial.html"
-        case changelog
-            set fish_help_page changelog.html
+        case releasenotes
+            set fish_help_page relnotes.html
         case completions
             set fish_help_page completions.html
         case faq
             set fish_help_page faq.html
         case fish-for-bash-users
             set fish_help_page fish_for_bash_users.html
+        case $faqpages
+            set fish_help_page "faq.html#$fish_help_item"
+        case $for_bash_pages
+            set fish_help_page "fish_for_bash_users.html#$fish_help_item"
+        case $langpages
+            set fish_help_page "language.html#$fish_help_item"
+        case $interactivepages
+            set fish_help_page "interactive.html#$fish_help_item"
         case ''
             set fish_help_page "index.html"
         case "*"
             set fish_help_page "index.html#$fish_help_item"
     end
 
+    # In Crostini Chrome OS Linux, the default browser opens URLs in Chrome running outside the
+    # linux VM. This browser does not have access to the Linux filesystem. This uses Garcon, see e.g.
+    # https://chromium.googlesource.com/chromiumos/platform2/+/master/vm_tools/garcon/#opening-urls
+    # https://source.chromium.org/search?q=garcon-url-handler
+    string match -q '*garcon-url-handler*' $fish_browser[1]
+    and set -l chromeos_linux_garcon
+
     set -l page_url
-    if test -f $__fish_help_dir/index.html
+    if test -f $__fish_help_dir/index.html; and not set -lq chromeos_linux_garcon
         # Help is installed, use it
         set page_url file://$__fish_help_dir/$fish_help_page
 
-        # For Windows (Cygwin, msys2 and WSL), we need to convert the base help dir to a Windows path before converting it to a file URL
+        # For Windows (Cygwin, msys2 and WSL), we need to convert the base
+        # help dir to a Windows path before converting it to a file URL
         # but only if a Windows browser is being used
         if type -q cygpath
             and string match -qr '(cygstart|\.exe)(\s+|$)' $fish_browser[1]
@@ -199,7 +259,7 @@ function help --description 'Show help for the fish shell'
                 printf (_ 'help: Help is being displayed in %s.\n') $fish_browser[1]
         end
         $fish_browser $page_url &
-        disown
+        disown $last_pid >/dev/null 2>&1
     else
         # Work around lynx bug where <div class="contents"> always has the same formatting as links (unreadable)
         # by using a custom style sheet. See https://github.com/fish-shell/fish-shell/issues/4170

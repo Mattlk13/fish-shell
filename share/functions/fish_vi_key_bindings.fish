@@ -75,7 +75,7 @@ function fish_vi_key_bindings --description 'vi-like key bindings for fish'
 
     # Default (command) mode
     bind -s --preset :q exit
-    bind -s --preset -m insert \cc cancel-commandline
+    bind -s --preset -m insert \cc cancel-commandline repaint-mode
     bind -s --preset -M default h backward-char
     bind -s --preset -M default l forward-char
     bind -s --preset -m insert \n execute
@@ -101,8 +101,8 @@ function fish_vi_key_bindings --description 'vi-like key bindings for fish'
         bind -s --preset $key beginning-of-line
     end
 
-    bind -s --preset u history-search-backward
-    bind -s --preset \cr history-search-forward
+    bind -s --preset u undo
+    bind -s --preset \cr redo
 
     bind -s --preset [ history-token-search-backward
     bind -s --preset ] history-token-search-forward
@@ -240,12 +240,16 @@ function fish_vi_key_bindings --description 'vi-like key bindings for fish'
     bind -s --preset , repeat-jump-reverse
 
     # in emacs yank means paste
-    bind -s --preset p yank
-    bind -s --preset P backward-char yank
+    # in vim p means paste *after* current character, so go forward a char before pasting
+    # also in vim, P means paste *at* current position (like at '|' with cursor = line),
+    # \ so there's no need to go back a char, just paste it without moving
+    bind -s --preset p forward-char yank
+    bind -s --preset P yank
     bind -s --preset gp yank-pop
 
-    bind -s --preset '"*p' "commandline -i ( xsel -p; echo )[1]"
-    bind -s --preset '"*P' backward-char "commandline -i ( xsel -p; echo )[1]"
+    # same vim 'pasting' note as upper
+    bind -s --preset '"*p' forward-char "commandline -i ( xsel -p; echo )[1]"
+    bind -s --preset '"*P' "commandline -i ( xsel -p; echo )[1]"
 
     #
     # Lowercase r, enters replace_one mode
@@ -298,11 +302,12 @@ function fish_vi_key_bindings --description 'vi-like key bindings for fish'
     end
 
     bind -s --preset -M visual -m insert c kill-selection end-selection repaint-mode
+    bind -s --preset -M visual -m insert s kill-selection end-selection repaint-mode
     bind -s --preset -M visual -m default d kill-selection end-selection repaint-mode
     bind -s --preset -M visual -m default x kill-selection end-selection repaint-mode
     bind -s --preset -M visual -m default X kill-whole-line end-selection repaint-mode
     bind -s --preset -M visual -m default y kill-selection yank end-selection repaint-mode
-    bind -s --preset -M visual -m default '"*y' "commandline -s | xsel -p; commandline -f end-selection repaint-mode"
+    bind -s --preset -M visual -m default '"*y' "fish_clipboard_copy; commandline -f end-selection repaint-mode"
     bind -s --preset -M visual -m default '~' togglecase-selection end-selection repaint-mode
 
     bind -s --preset -M visual -m default \cc end-selection repaint-mode

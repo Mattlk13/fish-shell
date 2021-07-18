@@ -28,16 +28,16 @@ The following options are available:
 
 - ``-e`` or ``--on-event EVENT_NAME`` tells fish to run this function when the specified named event is emitted. Fish internally generates named events e.g. when showing the prompt.
 
-- ``-v`` or ``--on-variable VARIABLE_NAME`` tells fish to run this function when the variable VARIABLE_NAME changes value.
+- ``-v`` or ``--on-variable VARIABLE_NAME`` tells fish to run this function when the variable VARIABLE_NAME changes value. Note that fish makes no guarantees on any particular timing or even that the function will be run for every single ``set``. Rather it will be run when the variable has been set at least once, possibly skipping some values or being run when the variable has been set to the same value (except for universal variables set in other shells - only changes in the value will be picked up for those).
 
-- ``-j PGID`` or ``--on-job-exit PGID`` tells fish to run this function when the job with group ID PGID exits. Instead of PGID, the string 'caller' can be specified. This is only legal when in a command substitution, and will result in the handler being triggered by the exit of the job which created this command substitution.
+- ``-j PID`` or ``--on-job-exit PID`` tells fish to run this function when the job containing a child process with the given PID exits. Instead of PID, the string 'caller' can be specified. This is only legal when in a command substitution, and will result in the handler being triggered by the exit of the job which created this command substitution.
 
 - ``-p PID`` or ``--on-process-exit PID`` tells fish to run this function when the fish child process
   with process ID PID exits. Instead of a PID, for backward compatibility,
   "``%self``" can be specified as an alias for ``$fish_pid``, and the function will be run when the
   current fish instance exits.
 
-- ``-s`` or ``--on-signal SIGSPEC`` tells fish to run this function when the signal SIGSPEC is delivered. SIGSPEC can be a signal number, or the signal name, such as SIGHUP (or just HUP).
+- ``-s`` or ``--on-signal SIGSPEC`` tells fish to run this function when the signal ``SIGSPEC`` is delivered. ``SIGSPEC`` can be a signal number, or the signal name, such as ``SIGHUP`` (or just ``HUP``). Note that the signal must have been delivered to fish; for example, :kbd:`Ctrl-C` sends ``SIGINT`` to the foreground process group, which will not be fish if you are running another command at the time.
 
 - ``-S`` or ``--no-scope-shadowing`` allows the function to access the variables of calling functions. Normally, any variables inside the function that have the same name as variables from the calling function are "shadowed", and their contents are independent of the calling function.
   It's important to note that this does not capture referenced variables or the scope at the time of function declaration! At this time, fish does not have any concept of closures, and variable lifetimes are never extended. In other words, by using ``--no-scope-shadowing`` the scope of the function each time it is run is shared with the scope it was *called* from rather than the scope it was *defined* in.
@@ -115,4 +115,9 @@ This will beep when the most recent job completes.
 Notes
 -----
 
-Note that events are only received from the current fish process as there is no way to send events from one fish process to another.
+Events are only received from the current fish process as there is no way to send events from one fish process to another.
+
+See more
+--------
+
+For more explanation of how functions fit into fish, see :ref:`Functions <syntax-function>`.

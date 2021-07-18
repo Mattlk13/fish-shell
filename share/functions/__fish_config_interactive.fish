@@ -62,7 +62,7 @@ function __fish_config_interactive -d "Initializations that should be performed 
         __init_uvar fish_color_cancel -r
 
         # Pager colors
-        __init_uvar fish_pager_color_prefix white --bold --underline
+        __init_uvar fish_pager_color_prefix normal --bold --underline
         __init_uvar fish_pager_color_completion
         __init_uvar fish_pager_color_description B3A06D yellow
         __init_uvar fish_pager_color_progress brwhite --background=cyan
@@ -107,21 +107,6 @@ function __fish_config_interactive -d "Initializations that should be performed 
     if status --is-interactive
         and functions -q fish_greeting
         fish_greeting
-    end
-
-    #
-    # This event handler makes sure the prompt is repainted when
-    # fish_color_cwd{,_root} changes value. Like all event handlers, it can't be
-    # autoloaded.
-    #
-    set -l varargs --on-variable fish_key_bindings
-    for var in user host{,_remote} cwd{,_root} status error
-        set -a varargs --on-variable fish_color_$var
-    end
-    function __fish_repaint $varargs -d "Event handler, repaints the prompt when fish_color_cwd* changes"
-        if status --is-interactive
-            commandline -f repaint 2>/dev/null
-        end
     end
 
     #
@@ -241,19 +226,39 @@ function __fish_config_interactive -d "Initializations that should be performed 
         # __fish_enable_focus
     end
 
-    function __fish_winch_handler --on-signal WINCH -d "Repaint screen when window changes size"
+    # Detect whether the terminal reflows on its own
+    # If it does we shouldn't do it.
+    # Allow $fish_handle_reflow to override it.
+    if not set -q fish_handle_reflow
         # VTE reflows the text itself, so us doing it inevitably races against it.
         # Guidance from the VTE developers is to let them repaint.
         if set -q VTE_VERSION
-            return
+            # Same for alacritty
+            or string match -q -- 'alacritty*' $TERM
+            # Same for kitty
+            or string match -q -- '*kitty' $TERM
+            set -g fish_handle_reflow 0
+        else if set -q KONSOLE_VERSION
+            and test "$KONSOLE_VERSION" -ge 210400 2>/dev/null
+            # Konsole since version 21.04(.00)
+            # Note that this is optional, but since we have no way of detecting it
+            # we go with the default, which is true.
+            set -g fish_handle_reflow 0
+        else
+            set -g fish_handle_reflow 1
         end
-        commandline -f repaint >/dev/null 2>/dev/null
+    end
+
+    function __fish_winch_handler --on-signal WINCH -d "Repaint screen when window changes size"
+        if test "$fish_handle_reflow" = 1 2>/dev/null
+            commandline -f repaint >/dev/null 2>/dev/null
+        end
     end
 
     # Notify terminals when $PWD changes (issue #906).
     # VTE based terminals, Terminal.app, iTerm.app (TODO), and foot support this.
     if not set -q FISH_UNIT_TESTS_RUNNING
-        and test 0"$VTE_VERSION" -ge 3405 -o "$TERM_PROGRAM" = Apple_Terminal -a (string match -r '\d+' 0"$TERM_PROGRAM_VERSION") -ge 309 -o "$TERM" = foot
+        and test 0"$VTE_VERSION" -ge 3405 -o "$TERM_PROGRAM" = Apple_Terminal -a (string match -r '\d+' 0"$TERM_PROGRAM_VERSION") -ge 309 -o "$TERM_PROGRAM" = WezTerm -o "$TERM" = foot
         function __update_cwd_osc --on-variable PWD --description 'Notify capable terminals when $PWD changes'
             if status --is-command-substitution || set -q INSIDE_EMACS
                 return
@@ -262,6 +267,16 @@ function __fish_config_interactive -d "Initializations that should be performed 
         end
         __update_cwd_osc # Run once because we might have already inherited a PWD from an old tab
     end
+
+    # Create empty configuration directores if they do not already exist
+    test -e $__fish_config_dir/completions/ -a -e $__fish_config_dir/conf.d/ -a -e $__fish_config_dir/functions/ ||
+        mkdir -p $__fish_config_dir/{completions, conf.d, functions}
+
+    # Create config.fish with some boilerplate if it does not exist
+    test -e $__fish_config_dir/config.fish || echo "\
+if status is-interactive
+    # Commands to run in interactive sessions can go here
+end" >$__fish_config_dir/config.fish
 
     # Bump this whenever some code below needs to run once when upgrading to a new version.
     # The universal variable __fish_initialized is initialized in share/config.fish.

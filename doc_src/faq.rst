@@ -10,13 +10,15 @@ How do I set or clear an environment variable?
 ----------------------------------------------
 Use the :ref:`set <cmd-set>` command::
 
-    set -x key value
+    set -x key value # typically set -gx key value
     set -e key
 
 Since fish 3.1 you can set an environment variable for just one command using the ``key=value some command`` syntax, like in other shells.  The two lines below behave identically - unlike other shells, fish will output ``value`` both times::
 
     key=value echo $key
     begin; set -lx key value; echo $key; end
+
+Note that "exported" is not a :ref:`scope <variables-scope>`, but an additional bit of state. A variable can be global and exported or local and exported or even universal and exported. Typically it makes sense to make an exported variable global.
 
 How do I check whether a variable is defined?
 ---------------------------------------------
@@ -62,7 +64,7 @@ variables.
 This means that the global value takes precedence over the universal value.
 
 To avoid this problem, consider changing the setting which fish inherits. If this is not possible,
-add a statement to your :ref:`user initialization file <initialization>` (usually
+add a statement to your :ref:`configuration file <configuration>` (usually
 ``~/.config/fish/config.fish``)::
 
     set -gx EDITOR vim
@@ -91,8 +93,10 @@ You can also use the Web configuration tool, :ref:`fish_config <cmd-fish_config>
 If you want to modify your existing prompt, you can use :ref:`funced <cmd-funced>` and :ref:`funcsave <cmd-funcsave>` like::
 
   >_ funced fish_prompt
-  # this opens up your editor (set in $EDITOR), modify the function, save the file, repeat to your liking
-  # once you are happy with it:
+  # This opens up your editor (set in $EDITOR).
+  # Modify the function,
+  # save the file and repeat to your liking.
+  # Once you are happy with it:
   >_ funcsave fish_prompt
 
 This also applies to :ref:`fish_right_prompt <cmd-fish_right_prompt>` and :ref:`fish_mode_prompt <cmd-fish_mode_prompt>`.
@@ -141,7 +145,7 @@ Note that fish has a default titlebar message, which will be used if the fish_ti
 
 How do I run a command from history?
 ------------------------------------
-Type some part of the command, and then hit the :kbd:`↑` (up) or :kbd:`↓` (down) arrow keys to navigate through history matches. Additional default key bindings include :kbd:`Control`\ +\ :kbd:`P` (up) and :kbd:`Control`\ +\ :kbd:`N` (down).
+Type some part of the command, and then hit the :kbd:`↑` (up) or :kbd:`↓` (down) arrow keys to navigate through history matches. Additional default key bindings include :kbd:`Control`\ +\ :kbd:`P` (up) and :kbd:`Control`\ +\ :kbd:`N` (down). See :ref:`Searchable command history <history-search>` for more information.
 
 Why doesn't history substitution ("!$" etc.) work?
 --------------------------------------------------
@@ -267,7 +271,8 @@ But it also means that these commands can stop working at any moment once a matc
 .. code-block:: sh
 
   for f in ./*.mpg; do
-        # We need to test if the file really exists because the wildcard might have failed to match.
+        # We need to test if the file really exists because
+        # the wildcard might have failed to match.
         test -f "$f" || continue
         mympgviewer "$f"
   done
@@ -291,29 +296,34 @@ In fish versions prior to 2.5.0 it was possible to create a function named ``-``
 The open command doesn't work.
 ------------------------------
 The ``open`` command uses the MIME type database and the ``.desktop`` files used by Gnome and KDE to identify filetypes and default actions. If at least one of these environments is installed, but the open command is not working, this probably means that the relevant files are installed in a non-standard location. Consider :ref:`asking for more help <more-help>`.
+
 .. _faq-ssh-interactive:
 
 Why won't SSH/SCP/rsync connect properly when fish is my login shell?
 ---------------------------------------------------------------------
 
-This problem may manifest as messages such as "``Received message too long``", "``open terminal
+This problem may show up as messages like "``Received message too long``", "``open terminal
 failed: not a terminal``", "``Bad packet length``", or "``Connection refused``" with strange output
 in ``ssh_exchange_identification`` messages in the debug log.
 
-These problems are generally caused by the :ref:`user initialization file <initialization>` (usually
-``~/.config/fish/config.fish``) producing output when started in non-interactive mode.
+This usually happens because fish reads the :ref:`user configuration file <configuration>` (``~/.config/fish/config.fish``) *always*,
+whether it's in an interactive or login or non-interactive or non-login shell.
 
-All statements in initialization files that output to the terminal should be guarded with something
-like the following::
+This simplifies matters, but it also means when config.fish generates output, it will do that even in non-interactive shells like the one ssh/scp/rsync start when they connect.
+
+Anything in config.fish that produces output should be guarded with ``status is-interactive`` (or ``status is-login`` if you prefer)::
+
 
   if status is-interactive
     ...
   end
 
+The same applies for example when you start ``tmux`` in config.fish without guards, which will cause a message like ``sessions should be nested with care, unset $TMUX to force``.
+
 .. _faq-unicode:
 
-I'm getting weird graphical glitches (a staircase effect, ghost characters,...)?
---------------------------------------------------------------------------------
+I'm getting weird graphical glitches (a staircase effect, ghost characters, cursor in the wrong position,...)?
+--------------------------------------------------------------------------------------------------------------
 In a terminal, the application running inside it and the terminal itself need to agree on the width of characters in order to handle cursor movement.
 
 This is more important to fish than other shells because features like syntax highlighting and autosuggestions are implemented by moving the cursor.
@@ -352,9 +362,9 @@ Unfortunately, there is no way to make the changes take effect at once. You will
 
 Uninstalling fish
 -----------------
-Should you wish to uninstall fish, first ensure fish is not set as your shell. Run ``chsh -s /bin/bash`` if you are not sure.
+If you want to uninstall fish, first make sure fish is not set as your shell. Run ``chsh -s /bin/bash`` if you are not sure.
 
-Next, do the following (assuming fish was installed to /usr/local)::
+If you installed it with a package manager, just use that package manager's uninstall function. If you built fish yourself, assuming you installed it to /usr/local, do this::
 
     rm -Rf /usr/local/etc/fish /usr/local/share/fish ~/.config/fish
     rm /usr/local/share/man/man1/fish*.1

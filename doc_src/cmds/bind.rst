@@ -2,7 +2,6 @@
 
 bind - handle fish key bindings
 ===============================
-
 Synopsis
 --------
 
@@ -28,9 +27,11 @@ The generic key binding that matches if no other binding does can be set by spec
 
 If the ``-k`` switch is used, the name of a key (such as 'down', 'up' or 'backspace') is used instead of a sequence. The names used are the same as the corresponding curses variables, but without the 'key\_' prefix. (See ``terminfo(5)`` for more information, or use ``bind --key-names`` for a list of all available named keys). Normally this will print an error if the current ``$TERM`` entry doesn't have a given key, unless the ``-s`` switch is given.
 
+To find out what sequence a key combination sends, you can use :ref:`fish_key_reader <cmd-fish_key_reader>`.
+
 ``COMMAND`` can be any fish command, but it can also be one of a set of special input functions. These include functions for moving the cursor, operating on the kill-ring, performing tab completion, etc. Use ``bind --function-names`` for a complete list of these input functions.
 
-When ``COMMAND`` is a shellscript command, it is a good practice to put the actual code into a `function <#function>`__ and simply bind to the function name. This way it becomes significantly easier to test the function while editing, and the result is usually more readable as well.
+When ``COMMAND`` is a shellscript command, it is a good practice to put the actual code into a :ref:`function <syntax-function>` and simply bind to the function name. This way it becomes significantly easier to test the function while editing, and the result is usually more readable as well.
 
 If a script produces output, it should finish by calling ``commandline -f repaint`` to tell fish that a repaint is in order.
 
@@ -38,7 +39,7 @@ Note that special input functions cannot be combined with ordinary shell script 
 
 If no ``SEQUENCE`` is provided, all bindings (or just the bindings in the given ``MODE``) are printed. If ``SEQUENCE`` is provided but no ``COMMAND``, just the binding matching that sequence is printed.
 
-To save custom keybindings, put the ``bind`` statements into :ref:`config.fish <initialization>`. Alternatively, fish also automatically executes a function called ``fish_user_key_bindings`` if it exists.
+To save custom keybindings, put the ``bind`` statements into :ref:`config.fish <configuration>`. Alternatively, fish also automatically executes a function called ``fish_user_key_bindings`` if it exists.
 
 Key bindings may use "modes", which mimics Vi's modal input behavior. The default mode is "default", and every bind applies to a single mode. The mode can be viewed/changed with the ``$fish_bind_mode`` variable.
 
@@ -126,6 +127,8 @@ The following special input functions are available:
 
 - ``execute``, run the current commandline
 
+- ``exit``, exit the shell
+
 - ``forward-bigword``, move one whitespace-delimited word to the right
 
 - ``forward-char``, move one character to the right
@@ -178,9 +181,13 @@ The following special input functions are available:
 
 - ``swap-selection-start-stop``, go to the other end of the highlighted text without changing the selection
 
-- ``transpose-chars``,  transpose two characters to the left of the cursor
+- ``transpose-chars``, transpose two characters to the left of the cursor
 
 - ``transpose-words``, transpose two words to the left of the cursor
+
+- ``togglecase-char``, toggle the capitalisation (case) of the character under the cursor
+
+- ``togglecase-selection``, toggle the capitalisation (case) of the selection
 
 - ``insert-line-under``, add a new line under the current line
 
@@ -196,6 +203,24 @@ The following special input functions are available:
 
 - ``yank-pop``, rotate to the previous entry of the killring
 
+Additional functions
+--------------------
+The following functions are included as normal functions, but are particularly useful for input editing:
+
+- ``up-or-search`` and ``down-or-search``,  which move the cursor or search the history depending on the cursor position and current mode
+
+- ``edit_command_buffer``, open the visual editor (controlled by the ``VISUAL`` or ``EDITOR`` environment variables) with the current command-line contents
+
+- ``delete-or-exit``, quit the shell if the current command-line is empty, or delete the character under the cursor if not
+
+- ``fish_clipboard_copy``, copy the current selection to the system clipboard
+
+- ``fish_clipboard_paste``, paste the current selection from the system clipboard before the cursor
+
+- ``fish_commandline_append``, append the argument to the command-line. If the command-line already ends with the argument, this removes the suffix instead. Starts with the last command from history if the command-line is empty.
+
+- ``fish_commandline_prepend``, prepend the argument to the command-line. If the command-line already starts with the argument, this removes the prefix instead. Starts with the last command from history if the command-line is empty.
+
 Examples
 --------
 
@@ -207,7 +232,7 @@ Perform a history search when :kbd:`Page Up` is pressed::
 
     bind -k ppage history-search-backward
 
-Turn on Vi key bindings and rebind :kbd:`Control`\ +\ :kbd:`C` to clear the input line::
+Turn on :ref:`Vi key bindings <vi-mode>` and rebind :kbd:`Control`\ +\ :kbd:`C` to clear the input line::
 
     set -g fish_key_bindings fish_vi_key_bindings
     bind -M insert \cc kill-whole-line repaint

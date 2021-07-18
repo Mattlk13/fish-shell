@@ -8,9 +8,9 @@ Synopsis
 
 ::
 
-    string match [(-a | --all)] [(-e | --entire)] [(-i | --ignore-case)] [(-r | --regex)] [(-n | --index)] [(-q | --quiet)] [(-v | --invert)] PATTERN [STRING...]
+    string match [(-a | --all)] [(-e | --entire)] [(-i | --ignore-case)] [(-g | --groups-only)] [(-r | --regex)] [(-n | --index)] [(-q | --quiet)] [(-v | --invert)] PATTERN [STRING...]
 
-.. END SYNOPSIS
+. END SYNOPSIS
 
 Description
 -----------
@@ -23,11 +23,13 @@ If you specify the ``-e`` or ``--entire`` then each matching string is printed i
 
 Matching can be made case-insensitive with ``--ignore-case`` or ``-i``.
 
+If ``--groups-only`` or ``-g`` is given, only the capturing groups will be reported - meaning the full match will be skipped. This is incompatible with ``--entire`` and ``--invert``, and requires ``--regex``. It is useful as a simple cutting tool instead of ``string replace``, so you can simply choose "this part" of a string.
+
 If ``--index`` or ``-n`` is given, each match is reported as a 1-based start position and a length. By default, PATTERN is interpreted as a glob pattern matched against each entire STRING argument. A glob pattern is only considered a valid match if it matches the entire STRING.
 
 If ``--regex`` or ``-r`` is given, PATTERN is interpreted as a Perl-compatible regular expression, which does not have to match the entire STRING. For a regular expression containing capturing groups, multiple items will be reported for each match, one for the entire match and one for each capturing group. With this, only the matching part of the STRING will be reported, unless ``--entire`` is given.
 
-When matching via regular expressions, ``string match`` automatically imports all named capturing groups (``(?<name>expression)``) as fish variables of the same name. It will create a variable in the default scope for each named capturing group, and set it to the value of the capturing group in the first matched argument. If a named capture group matched an empty string, the variable will be set to the empty string (like ``set var ""``). If it did not match, the variable will be set to nothing (like ``set var``).  When ``--regex`` is used with ``--all``, this behavior changes. Each named variable will contain a list of matches, with the first match contained in the first element, the second match in the second, and so on. If the group was empty or did not match, the corresponding element will be an empty string.
+When matching via regular expressions, ``string match`` automatically sets variables for all named capturing groups (``(?<name>expression)``). It will create a variable with the name of the group, in the default scope, for each named capturing group, and set it to the value of the capturing group in the first matched argument. If a named capture group matched an empty string, the variable will be set to the empty string (like ``set var ""``). If it did not match, the variable will be set to nothing (like ``set var``).  When ``--regex`` is used with ``--all``, this behavior changes. Each named variable will contain a list of matches, with the first match contained in the first element, the second match in the second, and so on. If the group was empty or did not match, the corresponding element will be an empty string.
 
 If ``--invert`` or ``-v`` is used the selected lines will be only those which do not match the given glob pattern or regular expression.
 

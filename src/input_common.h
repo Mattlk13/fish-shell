@@ -75,11 +75,15 @@ enum class readline_cmd_t {
     func_or,
     expand_abbr,
     delete_or_exit,
+    exit,
     cancel_commandline,
     cancel,
     undo,
     redo,
+    begin_undo_group,
+    end_undo_group,
     repeat_jump,
+    disable_mouse_tracking,
     // NOTE: This one has to be last.
     reverse_repeat_jump
 };
@@ -94,9 +98,6 @@ enum class char_event_type_t : uint8_t {
 
     /// A readline event.
     readline,
-
-    /// A timeout was hit.
-    timeout,
 
     /// end-of-file was reached.
     eof,
@@ -136,8 +137,6 @@ class char_event_t {
     /// Note that the generic self-insert case does not have any characters, so this would be empty.
     wcstring seq{};
 
-    bool is_timeout() const { return type == char_event_type_t::timeout; }
-
     bool is_char() const { return type == char_event_type_t::charc; }
 
     bool is_eof() const { return type == char_event_type_t::eof; }
@@ -149,6 +148,14 @@ class char_event_t {
     wchar_t get_char() const {
         assert(type == char_event_type_t::charc && "Not a char type");
         return v_.c;
+    }
+
+    maybe_t<wchar_t> maybe_char() const {
+        if (type == char_event_type_t::charc) {
+            return v_.c;
+        } else {
+            return none();
+        }
     }
 
     readline_cmd_t get_readline() const {
@@ -169,55 +176,61 @@ class char_event_t {
     }
 };
 
-/// A type of function invoked on interrupt.
-/// \return the event which is to be returned to the reader loop, or none if VINTR is 0.
-using interrupt_func_t = maybe_t<char_event_t> (*)();
-
-/// Init the library with an interrupt function.
-void input_common_init(interrupt_func_t func);
-
 /// Adjust the escape timeout.
 class environment_t;
-void update_wait_on_escape_ms(const environment_t& vars);
+void update_wait_on_escape_ms(const environment_t &vars);
 
 /// A class which knows how to produce a stream of input events.
+/// This is a base class; you may subclass it for its override points.
 class input_event_queue_t {
-    std::deque<char_event_t> queue_;
-
-    /// \return if we have any lookahead.
-    bool has_lookahead() const { return !queue_.empty(); }
-
-    /// \return the next event in the queue.
-    char_event_t pop();
-
-    /// \return the next event in the queue, discarding timeouts.
-    maybe_t<char_event_t> pop_discard_timeouts();
-
-    char_event_t readb();
-
-    int in_{0};
-
    public:
-    input_event_queue_t(int in = 0) : in_(in){};
+    /// Construct from a file descriptor \p in, and an interrupt handler \p handler.
+    explicit input_event_queue_t(int in = STDIN_FILENO);
 
     /// Function used by input_readch to read bytes from stdin until enough bytes have been read to
     /// convert them to a wchar_t. Conversion is done using mbrtowc. If a character has previously
-    /// been read and then 'unread' using \c input_common_unreadch, that character is returned. This
-    /// function never returns a timeout.
+    /// been read and then 'unread' using \c input_common_unreadch, that character is returned.
     char_event_t readch();
 
     /// Like readch(), except it will wait at most WAIT_ON_ESCAPE milliseconds for a
     /// character to be available for reading.
-    /// If \p dequeue_timeouts is set, remove any timeout from the queue; otherwise retain them.
-    char_event_t readch_timed(bool dequeue_timeouts = false);
+    /// \return none on timeout, the event on success.
+    maybe_t<char_event_t> readch_timed();
 
     /// Enqueue a character or a readline function to the queue of unread characters that
     /// readch will return before actually reading from fd 0.
-    void push_back(const char_event_t& ch);
+    void push_back(const char_event_t &ch);
 
     /// Add a character or a readline function to the front of the queue of unread characters.  This
     /// will be the next character returned by readch.
-    void push_front(const char_event_t& ch);
+    void push_front(const char_event_t &ch);
+
+    /// Add multiple characters or readline events to the front of the queue of unread characters.
+    /// The order of the provided events is not changed, i.e. they are not inserted in reverse
+    /// order.
+    template <typename Iterator>
+    void insert_front(const Iterator begin, const Iterator end) {
+        queue_.insert(queue_.begin(), begin, end);
+    }
+
+    /// Override point for when we are about to (potentially) block in select(). The default does
+    /// nothing.
+    virtual void prepare_to_select();
+
+    /// Override point for when when select() is interrupted by a signal. The default does nothing.
+    virtual void select_interrupted();
+
+    virtual ~input_event_queue_t();
+
+   private:
+    /// \return if we have any lookahead.
+    bool has_lookahead() const { return !queue_.empty(); }
+
+    /// \return the next event in the queue, or none if the queue is empty.
+    maybe_t<char_event_t> try_pop();
+
+    int in_{0};
+    std::deque<char_event_t> queue_;
 };
 
 #endif

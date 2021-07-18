@@ -29,7 +29,10 @@ function fish_add_path --description "Add paths to the PATH"
     end
 
     set -l var fish_user_paths
-    set -q _flag_path; and set var PATH
+    set -q _flag_path
+    and set var PATH
+    # $PATH should be global
+    and set scope -g
     set -l mode $_flag_prepend $_flag_append
     set -q mode[1]; or set mode -p
 
@@ -63,7 +66,7 @@ function fish_add_path --description "Add paths to the PATH"
     set -l newvar $$var
     if set -q _flag_move; and set -q indexes[1]
         # We remove in one step, so the indexes don't move.
-        set -e newvar[$indexes]
+        set -e newvar["$indexes"]
     end
     set $mode newvar $newpaths
 

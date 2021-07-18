@@ -27,29 +27,46 @@ enum class event_type_t {
     signal,
     /// An event triggered by a variable update.
     variable,
-    /// An event triggered by a job or process exit.
-    exit,
+    /// An event triggered by a process exit.
+    process_exit,
+    /// An event triggered by a job exit.
+    job_exit,
     /// An event triggered by a job exit, triggering the 'caller'-style events only.
     caller_exit,
     /// A generic event.
     generic,
 };
 
+/// Null-terminated list of valid event filter names.
+/// These are what are valid to pass to 'functions --handlers-type'
+extern const wchar_t *const event_filter_names[];
+
 /// Properties of an event.
 struct event_description_t {
+    /// Helper type for on-job-exit events.
+    struct job_spec_t {
+        // pid requested by the event, or ANY_PID for all.
+        pid_t pid;
+
+        // internal_job_id of the job to match.
+        // If this is 0, we match either all jobs (pid == ANY_PID) or no jobs (otherwise).
+        uint64_t internal_job_id;
+    };
+
     /// The event type.
     event_type_t type;
 
     /// The type-specific parameter. The int types are one of the following:
     ///
     /// signal: Signal number for signal-type events.Use EVENT_ANY_SIGNAL to match any signal
-    /// pid: Process id for process-type events. Use EVENT_ANY_PID to match any pid. (Negative
-    /// values are used for PGIDs).
+    /// pid: Process id for process-type events. Use EVENT_ANY_PID to match any pid.
+    /// jobspec: Info for on-job-exit events.
     /// caller_id: Internal job id for caller_exit type events
     union {
         int signal;
-        uint64_t caller_id;
         pid_t pid;
+        job_spec_t jobspec;
+        uint64_t caller_id;
     } param1{};
 
     /// The string types are one of the following:
@@ -86,9 +103,20 @@ struct event_t {
     /// Arguments to any handler.
     wcstring_list_t arguments{};
 
-    event_t(event_type_t t) : desc(t) {}
+    explicit event_t(event_type_t t) : desc(t) {}
 
+    /// Create an event_type_t::variable event.
     static event_t variable(wcstring name, wcstring_list_t args);
+
+    /// Create a PROCESS_EXIT event.
+    static event_t process_exit(pid_t pid, int status);
+
+    /// Create a JOB_EXIT event. The pgid should be positive.
+    /// The reported status is always 0 for historical reasons.
+    static event_t job_exit(pid_t pgid, internal_job_id_t jid);
+
+    /// Create a caller_exit event.
+    static event_t caller_exit(uint64_t internal_job_id, int job_id);
 };
 
 class parser_t;
@@ -115,8 +143,8 @@ void event_fire_delayed(parser_t &parser);
 /// Enqueue a signal event. Invoked from a signal handler.
 void event_enqueue_signal(int signal);
 
-/// Print all events. If type_filter is not none(), only output events with that type.
-void event_print(io_streams_t &streams, maybe_t<event_type_t> type_filter);
+/// Print all events. If type_filter is not empty, only output events with that type.
+void event_print(io_streams_t &streams, const wcstring &type_filter);
 
 /// Returns a string describing the specified event.
 wcstring event_get_desc(const parser_t &parser, const event_t &e);
@@ -124,8 +152,5 @@ wcstring event_get_desc(const parser_t &parser, const event_t &e);
 /// Fire a generic event with the specified name.
 void event_fire_generic(parser_t &parser, const wchar_t *name,
                         const wcstring_list_t *args = nullptr);
-
-/// Return the event type for a given name, or none.
-maybe_t<event_type_t> event_type_for_name(const wcstring &name);
 
 #endif

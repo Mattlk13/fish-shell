@@ -119,8 +119,8 @@ static const struct woption long_options[] = {{L"help", no_argument, nullptr, 'h
                                               {nullptr, 0, nullptr, 0}};
 
 int parse_help_only_cmd_opts(struct help_only_cmd_opts_t &opts, int *optind, int argc,
-                             wchar_t **argv, parser_t &parser, io_streams_t &streams) {
-    wchar_t *cmd = argv[0];
+                             const wchar_t **argv, parser_t &parser, io_streams_t &streams) {
+    const wchar_t *cmd = argv[0];
     int opt;
     wgetopter_t w;
     while ((opt = w.wgetopt_long(argc, argv, short_options, long_options, nullptr)) != -1) {
@@ -155,7 +155,6 @@ int parse_help_only_cmd_opts(struct help_only_cmd_opts_t &opts, int *optind, int
 /// Process and print help for the specified builtin or function.
 void builtin_print_help(parser_t &parser, const io_streams_t &streams, const wchar_t *name,
                         wcstring *error_message) {
-    UNUSED(streams);
     // This won't ever work if no_exec is set.
     if (no_exec()) return;
     const wcstring name_esc = escape_string(name, ESCAPE_ALL);
@@ -166,8 +165,10 @@ void builtin_print_help(parser_t &parser, const io_streams_t &streams, const wch
         // If it's an error, redirect the output of __fish_print_help to stderr
         ios.push_back(std::make_shared<io_fd_t>(STDOUT_FILENO, STDERR_FILENO));
     }
-    parser.eval(cmd, ios);
-    // ignore the exit status of __fish_print_help
+    auto res = parser.eval(cmd, ios);
+    if (res.status.exit_code() == 2) {
+        streams.err.append_format(BUILTIN_ERR_MISSING_HELP, name_esc.c_str(), name_esc.c_str());
+    }
 }
 
 /// Perform error reporting for encounter with unknown option.
@@ -203,7 +204,7 @@ void builtin_print_error_trailer(parser_t &parser, output_stream_t &b, const wch
 
 /// A generic bultin that only supports showing a help message. This is only a placeholder that
 /// prints the help message. Useful for commands that live in the parser.
-static maybe_t<int> builtin_generic(parser_t &parser, io_streams_t &streams, wchar_t **argv) {
+static maybe_t<int> builtin_generic(parser_t &parser, io_streams_t &streams, const wchar_t **argv) {
     const wchar_t *cmd = argv[0];
     int argc = builtin_count_args(argv);
     help_only_cmd_opts_t opts;
@@ -230,17 +231,23 @@ static maybe_t<int> builtin_generic(parser_t &parser, io_streams_t &streams, wch
 // Since this is just for counting, it can be massive.
 #define COUNT_CHUNK_SIZE (512 * 256)
 /// Implementation of the builtin count command, used to count the number of arguments sent to it.
-static maybe_t<int> builtin_count(parser_t &parser, io_streams_t &streams, wchar_t **argv) {
+static maybe_t<int> builtin_count(parser_t &parser, io_streams_t &streams, const wchar_t **argv) {
     UNUSED(parser);
     int argc = 0;
 
     // Count the newlines coming in via stdin like `wc -l`.
     if (streams.stdin_is_directly_redirected) {
+        assert(streams.stdin_fd >= 0 &&
+               "Should have a valid fd since stdin is directly redirected");
         char buf[COUNT_CHUNK_SIZE];
         while (true) {
             long n = read_blocked(streams.stdin_fd, buf, COUNT_CHUNK_SIZE);
-            // Ignore all errors for now.
-            if (n <= 0) break;
+            if (n == 0) {
+                break;
+            } else if (n < 0) {
+                wperror(L"read");
+                return STATUS_CMD_ERROR;
+            }
             for (int i = 0; i < n; i++) {
                 if (buf[i] == L'\n') {
                     argc++;
@@ -259,7 +266,7 @@ static maybe_t<int> builtin_count(parser_t &parser, io_streams_t &streams, wchar
 /// This function handles both the 'continue' and the 'break' builtins that are used for loop
 /// control.
 static maybe_t<int> builtin_break_continue(parser_t &parser, io_streams_t &streams,
-                                           wchar_t **argv) {
+                                           const wchar_t **argv) {
     int is_break = (std::wcscmp(argv[0], L"break") == 0);
     int argc = builtin_count_args(argv);
 
@@ -290,8 +297,9 @@ static maybe_t<int> builtin_break_continue(parser_t &parser, io_streams_t &strea
 }
 
 /// Implementation of the builtin breakpoint command, used to launch the interactive debugger.
-static maybe_t<int> builtin_breakpoint(parser_t &parser, io_streams_t &streams, wchar_t **argv) {
-    wchar_t *cmd = argv[0];
+static maybe_t<int> builtin_breakpoint(parser_t &parser, io_streams_t &streams,
+                                       const wchar_t **argv) {
+    const wchar_t *cmd = argv[0];
     if (argv[1] != nullptr) {
         streams.err.append_format(BUILTIN_ERR_ARG_COUNT1, cmd, 0, builtin_count_args(argv) - 1);
         return STATUS_INVALID_ARGS;
@@ -316,21 +324,21 @@ static maybe_t<int> builtin_breakpoint(parser_t &parser, io_streams_t &streams, 
     return parser.get_last_status();
 }
 
-maybe_t<int> builtin_true(parser_t &parser, io_streams_t &streams, wchar_t **argv) {
+maybe_t<int> builtin_true(parser_t &parser, io_streams_t &streams, const wchar_t **argv) {
     UNUSED(parser);
     UNUSED(streams);
     UNUSED(argv);
     return STATUS_CMD_OK;
 }
 
-maybe_t<int> builtin_false(parser_t &parser, io_streams_t &streams, wchar_t **argv) {
+maybe_t<int> builtin_false(parser_t &parser, io_streams_t &streams, const wchar_t **argv) {
     UNUSED(parser);
     UNUSED(streams);
     UNUSED(argv);
     return STATUS_CMD_ERROR;
 }
 
-maybe_t<int> builtin_gettext(parser_t &parser, io_streams_t &streams, wchar_t **argv) {
+maybe_t<int> builtin_gettext(parser_t &parser, io_streams_t &streams, const wchar_t **argv) {
     UNUSED(parser);
     UNUSED(streams);
     for (int i = 1; i < builtin_count_args(argv); i++) {
@@ -445,32 +453,49 @@ bool builtin_exists(const wcstring &cmd) { return static_cast<bool>(builtin_look
 /// Is the command a keyword we need to special-case the handling of `-h` and `--help`.
 static const wchar_t *const help_builtins[] = {L"for", L"while",  L"function", L"if",
                                                L"end", L"switch", L"case"};
-static bool cmd_needs_help(const wchar_t *cmd) { return contains(help_builtins, cmd); }
+static bool cmd_needs_help(const wcstring &cmd) { return contains(help_builtins, cmd); }
 
 /// Execute a builtin command
-proc_status_t builtin_run(parser_t &parser, wchar_t **argv, io_streams_t &streams) {
-    UNUSED(parser);
-    UNUSED(streams);
-    if (argv == nullptr || argv[0] == nullptr)
-        return proc_status_t::from_exit_code(STATUS_INVALID_ARGS);
+proc_status_t builtin_run(parser_t &parser, const wcstring_list_t &argv, io_streams_t &streams) {
+    if (argv.empty()) return proc_status_t::from_exit_code(STATUS_INVALID_ARGS);
+    const wcstring &cmdname = argv.front();
 
     // We can be handed a keyword by the parser as if it was a command. This happens when the user
     // follows the keyword by `-h` or `--help`. Since it isn't really a builtin command we need to
     // handle displaying help for it here.
-    if (argv[1] && !argv[2] && parse_util_argument_is_help(argv[1]) && cmd_needs_help(argv[0])) {
-        builtin_print_help(parser, streams, argv[0]);
+    if (argv.size() == 2 && parse_util_argument_is_help(argv[1]) && cmd_needs_help(cmdname)) {
+        builtin_print_help(parser, streams, cmdname.c_str());
         return proc_status_t::from_exit_code(STATUS_CMD_OK);
     }
 
-    if (const builtin_data_t *data = builtin_lookup(argv[0])) {
-        maybe_t<int> ret = data->func(parser, streams, argv);
-        if (!ret) {
+    if (const builtin_data_t *data = builtin_lookup(cmdname)) {
+        // Construct the permutable argv array which the builtin expects, and execute the builtin.
+        null_terminated_array_t<wchar_t> argv_arr(argv);
+        maybe_t<int> builtin_ret = data->func(parser, streams, argv_arr.get());
+
+        // Flush our out and error streams, and check for their errors.
+        int out_ret = streams.out.flush_and_check_error();
+        int err_ret = streams.err.flush_and_check_error();
+
+        // Resolve our status code.
+        // If the builtin itself produced an error, use that error.
+        // Otherwise use any errors from writing to out and writing to err, in that order.
+        int code = builtin_ret ? *builtin_ret : 0;
+        if (code == 0) code = out_ret;
+        if (code == 0) code = err_ret;
+
+        // The exit code is cast to an 8-bit unsigned integer, so saturate to 255. Otherwise,
+        // multiples of 256 are reported as 0.
+        if (code > 255) code = 255;
+
+        // Handle the case of an empty status.
+        if (code == 0 && !builtin_ret.has_value()) {
             return proc_status_t::empty();
         }
-        return proc_status_t::from_exit_code(ret.value());
+        return proc_status_t::from_exit_code(code);
     }
 
-    FLOGF(error, UNKNOWN_BUILTIN_ERR_MSG, argv[0]);
+    FLOGF(error, UNKNOWN_BUILTIN_ERR_MSG, cmdname.c_str());
     return proc_status_t::from_exit_code(STATUS_CMD_ERROR);
 }
 

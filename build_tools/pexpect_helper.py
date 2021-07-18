@@ -26,6 +26,7 @@ import pexpect
 # Default timeout for failing to match.
 TIMEOUT_SECS = 5
 
+UNEXPECTED_SUCCESS = object()
 
 def get_prompt_re(counter):
     """ Return a regular expression for matching a with a given prompt counter. """
@@ -74,6 +75,8 @@ def pexpect_error_type(err):
         return "EOF"
     elif isinstance(err, pexpect.TIMEOUT):
         return "timeout"
+    elif err is UNEXPECTED_SUCCESS:
+        return "unexpected success"
     else:
         return "unknown error"
 
@@ -126,7 +129,7 @@ class SpawnedProc(object):
             function to ensure that each printed prompt is distinct.
     """
 
-    def __init__(self, name="fish", timeout=TIMEOUT_SECS, env=os.environ.copy()):
+    def __init__(self, name="fish", timeout=TIMEOUT_SECS, env=os.environ.copy(), **kwargs):
         """Construct from a name, timeout, and environment.
 
         Args:
@@ -138,12 +141,12 @@ class SpawnedProc(object):
             env: a string->string dictionary, describing the environment variables.
         """
         if name not in env:
-            raise ValueError("'name' variable not found in environment" % name)
+            raise ValueError("'%s' variable not found in environment" % name)
         exe_path = env.get(name)
         self.colorize = sys.stdout.isatty()
         self.messages = []
         self.start_time = None
-        self.spawn = pexpect.spawn(exe_path, env=env, encoding="utf-8", timeout=timeout)
+        self.spawn = pexpect.spawn(exe_path, env=env, encoding="utf-8", timeout=timeout, **kwargs)
         self.spawn.delaybeforesend = None
         self.prompt_counter = 0
 
@@ -169,7 +172,7 @@ class SpawnedProc(object):
         """
         return self.send(s + os.linesep)
 
-    def expect_re(self, pat, pat_desc=None, unmatched=None, **kwargs):
+    def expect_re(self, pat, pat_desc=None, unmatched=None, shouldfail=False, **kwargs):
         """Cover over pexpect.spawn.expect().
         Consume all "new" output of self.spawn until the given pattern is matched, or
         the timeout is reached.
@@ -190,8 +193,15 @@ class SpawnedProc(object):
             # When a match is found,
             # spawn.match is the MatchObject that produced it.
             # This can be used to check what exactly was matched.
+            if shouldfail:
+                err = UNEXPECTED_SUCCESS
+                if not pat_desc:
+                    pat_desc = str(pat)
+                self.report_exception_and_exit(pat_desc, unmatched, err)
             return self.spawn.match
         except pexpect.ExceptionPexpect as err:
+            if shouldfail:
+                return True
             if not pat_desc:
                 pat_desc = str(pat)
             self.report_exception_and_exit(pat_desc, unmatched, err)
@@ -281,7 +291,6 @@ class SpawnedProc(object):
             else:
                 timestampstr = "{timestamp:10.2f} ms".format(timestamp=timestamp)
             delta = m.when * 1000.0
-            dir = m.dir
             print(
                 "{dir} {timestampstr} (Line {lineno}): {BOLD}{etext}{RESET}".format(
                     dir=m.dir,

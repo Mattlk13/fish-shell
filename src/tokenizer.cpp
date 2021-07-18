@@ -145,9 +145,23 @@ tok_t tokenizer_t::read_string() {
     std::vector<int> paran_offsets;
     std::vector<int> brace_offsets;
     std::vector<char> expecting;
+    std::vector<size_t> quoted_cmdsubs;
     int slice_offset = 0;
     const wchar_t *const buff_start = this->token_cursor;
     bool is_first = true;
+
+    auto process_opening_quote = [&](wchar_t quote) -> const wchar_t * {
+        const wchar_t *end = quote_end(this->token_cursor, quote);
+        if (end) {
+            if (*end == L'$') quoted_cmdsubs.push_back(paran_offsets.size());
+            this->token_cursor = end;
+            return nullptr;
+        } else {
+            const wchar_t *error_loc = this->token_cursor;
+            this->token_cursor += std::wcslen(this->token_cursor);
+            return error_loc;
+        }
+    };
 
     while (true) {
         wchar_t c = *this->token_cursor;
@@ -195,6 +209,19 @@ tok_t tokenizer_t::read_string() {
                 mode &= ~(tok_modes::subshell);
             }
             expecting.pop_back();
+            // Check if the ) did complete a quoted command substituion.
+            if (!quoted_cmdsubs.empty() && quoted_cmdsubs.back() == paran_offsets.size()) {
+                quoted_cmdsubs.pop_back();
+                // Quoted command substitutions temporarily close double quotes, after ),
+                // we need to act as if there was an invisible double quote.
+                if (const wchar_t *error_loc = process_opening_quote(L'"')) {
+                    if (!this->accept_unfinished) {
+                        return this->call_error(tokenizer_error_t::unterminated_quote, buff_start,
+                                                error_loc);
+                    }
+                    break;
+                }
+            }
         } else if (c == L'}') {
             if (!expecting.empty() && expecting.back() == L')') {
                 return this->call_error(tokenizer_error_t::expected_pclose_found_bclose,
@@ -225,13 +252,8 @@ tok_t tokenizer_t::read_string() {
         else if (c == L']' && ((mode & tok_modes::array_brackets) == tok_modes::array_brackets)) {
             mode &= ~(tok_modes::array_brackets);
         } else if (c == L'\'' || c == L'"') {
-            const wchar_t *end = quote_end(this->token_cursor);
-            if (end) {
-                this->token_cursor = end;
-            } else {
-                const wchar_t *error_loc = this->token_cursor;
-                this->token_cursor += std::wcslen(this->token_cursor);
-                if ((!this->accept_unfinished)) {
+            if (const wchar_t *error_loc = process_opening_quote(c)) {
+                if (!this->accept_unfinished) {
                     return this->call_error(tokenizer_error_t::unterminated_quote, buff_start,
                                             error_loc);
                 }
@@ -254,7 +276,7 @@ tok_t tokenizer_t::read_string() {
         is_first = false;
     }
 
-    if ((!this->accept_unfinished) && (mode != tok_modes::regular_text)) {
+    if (!this->accept_unfinished && (mode != tok_modes::regular_text)) {
         if (mode & tok_modes::char_escape) {
             return this->call_error(tokenizer_error_t::unterminated_escape, buff_start,
                                     this->token_cursor - 1, 1);
@@ -752,18 +774,22 @@ bool move_word_state_machine_t::consume_char_path_components(wchar_t c) {
         s_separator,
         s_slash,
         s_path_component_characters,
+        s_initial_separator,
         s_end
     };
 
-    // std::fwprintf(stdout, L"state %d, consume '%lc'\n", state, c);
     bool consumed = false;
     while (state != s_end && !consumed) {
         switch (state) {
             case s_initial_punctuation: {
-                if (!is_path_component_character(c)) {
-                    consumed = true;
+                if (!is_path_component_character(c) && !iswspace(c)) {
+                    state = s_initial_separator;
+                } else {
+                    if (!is_path_component_character(c)) {
+                        consumed = true;
+                    }
+                    state = s_whitespace;
                 }
-                state = s_whitespace;
                 break;
             }
             case s_whitespace: {
@@ -797,6 +823,17 @@ bool move_word_state_machine_t::consume_char_path_components(wchar_t c) {
                     consumed = true;  // consumed string character except slash
                 } else {
                     state = s_end;
+                }
+                break;
+            }
+            case s_initial_separator: {
+                if (is_path_component_character(c)) {
+                    consumed = true;
+                    state = s_path_component_characters;
+                } else if (iswspace(c)) {
+                    state = s_end;
+                } else {
+                    consumed = true;
                 }
                 break;
             }

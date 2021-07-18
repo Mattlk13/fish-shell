@@ -29,16 +29,23 @@ bool path_get_config(wcstring &path);
 /// \return whether the directory was returned successfully
 bool path_get_data(wcstring &path);
 
+/// \return if the data directory is remote (eg. NFS).
+/// -1 means unknown, 0 means known local, 1 means known remote.
+int path_get_data_is_remote();
+
+/// Like path_get_data_is_remote but for config directory.
+int path_get_config_is_remote();
+
 /// Emit any errors if config directories are missing.
 /// Use the given environment stack to ensure this only occurs once.
 class env_stack_t;
-void path_emit_config_directory_errors(env_stack_t &vars);
+void path_emit_config_directory_messages(env_stack_t &vars);
 
-/// Finds the full path of an executable.
+/// Finds the path of an executable.
 ///
 /// Args:
 /// cmd - The name of the executable.
-/// output_or_NULL - If non-NULL, store the full path.
+/// output_or_NULL - If non-NULL, store the path.
 /// vars - The environment variables to use
 ///
 /// Returns:
@@ -63,6 +70,10 @@ wcstring_list_t path_get_paths(const wcstring &cmd, const environment_t &vars);
 /// \return the command, or none() if it could not be found.
 maybe_t<wcstring> path_get_cdpath(const wcstring &dir, const wcstring &wd,
                                   const environment_t &vars);
+
+/// Returns the given directory with all CDPATH components applied.
+wcstring_list_t path_apply_cdpath(const wcstring &dir, const wcstring &wd,
+                                  const environment_t &env_vars);
 
 /// Returns the path resolved as an implicit cd command, or none() if none. This requires it to
 /// start with one of the allowed prefixes (., .., ~) and resolve to a directory.
