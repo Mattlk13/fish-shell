@@ -184,7 +184,7 @@ fn escape_string_script(input: &wstr, flags: EscapeFlags) -> WString {
     let escape_comma = flags.contains(EscapeFlags::COMMA);
     let no_quoted = flags.contains(EscapeFlags::NO_QUOTED);
     let no_tilde = flags.contains(EscapeFlags::NO_TILDE);
-    let no_qmark = feature_test(FeatureFlag::qmark_noglob);
+    let no_qmark = feature_test(FeatureFlag::QuestionMarkNoGlob);
     let symbolic = flags.contains(EscapeFlags::SYMBOLIC);
 
     assert!(
@@ -501,7 +501,7 @@ fn unescape_string_internal(input: &wstr, flags: UnescapeFlags) -> Option<WStrin
     let unescape_special = flags.contains(UnescapeFlags::SPECIAL);
     let allow_incomplete = flags.contains(UnescapeFlags::INCOMPLETE);
     let ignore_backslashes = flags.contains(UnescapeFlags::NO_BACKSLASHES);
-    let allow_percent_self = !feature_test(FeatureFlag::remove_percent_self);
+    let allow_percent_self = !feature_test(FeatureFlag::RemovePercentSelf);
 
     // The positions of open braces.
     let mut braces = vec![];
@@ -583,7 +583,7 @@ fn unescape_string_internal(input: &wstr, flags: UnescapeFlags) -> Option<WStrin
                     }
                 }
                 '?' => {
-                    if unescape_special && !feature_test(FeatureFlag::qmark_noglob) {
+                    if unescape_special && !feature_test(FeatureFlag::QuestionMarkNoGlob) {
                         to_append_or_none = Some(ANY_CHAR);
                     }
                 }
@@ -1558,9 +1558,9 @@ pub fn is_windows_subsystem_for_linux(v: WSL) -> bool {
         // this check: if the environment variable FISH_NO_WSL_CHECK is present, this test
         // is bypassed. We intentionally do not include this in the error message because
         // it'll only allow fish to run but not to actually work. Here be dragons!
-        use crate::flog::FLOG;
+        use crate::flog::flog;
         if env::var_os("FISH_NO_WSL_CHECK").is_none() {
-            FLOG!(
+            flog!(
                 error,
                 concat!(
                     "This version of WSL has known bugs that prevent fish from working.\n",

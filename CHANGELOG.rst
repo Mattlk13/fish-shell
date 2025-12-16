@@ -37,6 +37,11 @@ Interactive improvements
 - Prefix-matching completions are now shown even if they don't have the case typed by the user (:issue:`7944`).
 - On Cygwin/MSYS, command name completion will favor the non-exe name (``foo``) unless the user started typing the extension.
 - When using the exe name (``foo.exe``), fish will use to the description and completions for ``foo`` if there are none for ``foo.exe``.
+- Autosuggestions now also show soft-wrapped portions (:issue:`12045`).
+
+New or improved bindings
+------------------------
+- Added `backward-path-component`, `forward-path-component` and `kill-path-component` (:issue:`12127`).
 
 Improved terminal support
 -------------------------

@@ -74,7 +74,7 @@ use crate::expand::{ExpandFlags, ExpandResultCode, expand_string, expand_tilde};
 use crate::fallback::fish_wcwidth;
 use crate::fd_readable_set::poll_fd_readable;
 use crate::fds::{AutoCloseFd, make_fd_blocking, wopen_cloexec};
-use crate::flog::{FLOG, FLOGF};
+use crate::flog::{flog, flogf};
 use crate::future_feature_flags::{self, FeatureFlag};
 use crate::global_safety::RelaxedAtomicBool;
 use crate::highlight::{
@@ -239,7 +239,7 @@ fn redirect_tty_after_sighup() {
 }
 
 fn querying_allowed(vars: &dyn Environment) -> bool {
-    future_feature_flags::test(FeatureFlag::query_term)
+    future_feature_flags::test(FeatureFlag::QueryTerm)
         && !is_dumb()
         && {
             // TODO(term-workaround)
@@ -304,7 +304,7 @@ pub fn terminal_init(vars: &dyn Environment, inputfd: RawFd) -> TerminalInitResu
             CharEvent::QueryResult(Response(QueryResponse::CursorPosition(_))) => (),
             CharEvent::QueryResult(Timeout) => {
                 let program = get_program_name();
-                FLOG!(
+                flog!(
                     warning,
                     wgettext_fmt!(
                         "%s could not read response to Primary Device Attribute query after waiting for %d seconds. \
@@ -335,7 +335,7 @@ pub fn terminal_init(vars: &dyn Environment, inputfd: RawFd) -> TerminalInitResu
     // We blocked execution of code and mappings so input function args must be empty.
     assert!(input_data.input_function_args.is_empty());
     assert!(input_data.event_storage.is_empty());
-    FLOGF!(
+    flogf!(
         reader,
         "Returning %u pending input events",
         input_data.queue.len()
@@ -911,7 +911,7 @@ fn read_ni(parser: &Parser, fd: RawFd, io: &IoChain) -> Result<(), ErrorCode> {
     let md = match fstat(fd) {
         Ok(md) => md,
         Err(err) => {
-            FLOG!(
+            flog!(
                 error,
                 wgettext_fmt!("Unable to read input file: %s", err.to_string())
             );
@@ -923,7 +923,7 @@ fn read_ni(parser: &Parser, fd: RawFd, io: &IoChain) -> Result<(), ErrorCode> {
     // XXX: This can be triggered spuriously, so we'll not do that for stdin.
     // This can be seen e.g. with node's "spawn" api.
     if fd != STDIN_FILENO && md.is_dir() {
-        FLOG!(
+        flog!(
             error,
             wgettext_fmt!("Unable to read input file: %s", Errno(EISDIR).to_string())
         );
@@ -953,7 +953,7 @@ fn read_ni(parser: &Parser, fd: RawFd, io: &IoChain) -> Result<(), ErrorCode> {
                     continue;
                 } else {
                     // Fatal error.
-                    FLOG!(
+                    flog!(
                         error,
                         wgettext_fmt!("Unable to read input file: %s", err.to_string())
                     );
@@ -993,7 +993,9 @@ pub fn reader_init(will_restore_foreground_pgroup: bool) {
         TERMINAL_MODE_ON_STARTUP.get_or_init(|| terminal_mode_on_startup);
     }
 
-    assert!(cfg!(test) || AT_EXIT.get().is_none());
+    if !cfg!(test) {
+        assert!(AT_EXIT.get().is_none());
+    }
     AT_EXIT.get_or_init(|| Box::new(move || reader_deinit(will_restore_foreground_pgroup)));
 
     // Set the mode used for program execution, initialized to the current mode.
@@ -1602,7 +1604,7 @@ impl ReaderData {
     }
 
     pub fn mouse_left_click(&mut self, click_position: ViewportPosition) {
-        FLOGF!(
+        flogf!(
             reader,
             "Received left mouse click at %u",
             format!("{:?}", click_position),
@@ -1711,7 +1713,7 @@ impl<'a> Reader<'a> {
         // The pager is the problem child, it has its own update logic.
         let check = |val: bool, reason: &str| {
             if val {
-                FLOG!(reader_render, "repaint needed because", reason, "change");
+                flog!(reader_render, "repaint needed because", reason, "change");
             }
             val
         };
@@ -1790,9 +1792,9 @@ impl<'a> Reader<'a> {
     }
 
     /// Paint the last rendered layout.
-    /// `reason` is used in FLOG to explain why.
+    /// `reason` is used in flog to explain why.
     fn paint_layout(&mut self, reason: &wstr, is_final_rendering: bool) {
-        FLOGF!(reader_render, "Repainting from %s", reason);
+        flogf!(reader_render, "Repainting from %s", reason);
         let cmd_line = &self.data.command_line;
 
         let (full_line, autosuggested_range) = if self.conf.in_silent_mode {
@@ -2196,8 +2198,7 @@ impl ReaderData {
         let mut buff_pos = el.position();
         while buff_pos != boundary {
             let idx = if move_right { buff_pos } else { buff_pos - 1 };
-            let c = el.at(idx);
-            if !state.consume_char(c) {
+            if !state.consume_char(el.text(), idx) {
                 break;
             }
             buff_pos = if move_right {
@@ -2671,7 +2672,7 @@ impl<'a> Reader<'a> {
                         self.save_screen_state();
                     }
                     MouseLeft(position) => {
-                        FLOG!(reader, "Mouse left click", position);
+                        flog!(reader, "Mouse left click", position);
                         self.mouse_left_click(position);
                     }
                     NewColorTheme => {
@@ -2681,7 +2682,7 @@ impl<'a> Reader<'a> {
                         });
                     }
                     NewWindowHeight => {
-                        FLOG!(reader, "Handling window height change");
+                        flog!(reader, "Handling window height change");
                         self.query(RecurrentQuery {
                             cursor_position: Some(CursorPositionQuery::new(
                                 CursorPositionQueryReason::WindowHeightChange,
@@ -2764,7 +2765,7 @@ fn send_xtgettcap_query(out: &mut impl Output, cap: &'static str) {
     if should_flog!(reader) {
         let mut tmp = Vec::<u8>::new();
         tmp.write_command(QueryXtgettcap(cap));
-        FLOG!(
+        flog!(
             reader,
             format!("Sending XTGETTCAP request for {}: {:?}", cap, tmp)
         );
@@ -3417,13 +3418,14 @@ impl<'a> Reader<'a> {
                     newv,
                 )
             }
-            rl::KillWord | rl::KillBigword => {
+            rl::KillWord | rl::KillPathComponent | rl::KillBigword => {
                 // The "bigword" functions differ only in that they move to the next whitespace, not
                 // punctuation.
-                let style = if c == rl::KillWord {
-                    MoveWordStyle::Punctuation
-                } else {
-                    MoveWordStyle::Whitespace
+                let style = match c {
+                    rl::KillBigword => MoveWordStyle::Whitespace,
+                    rl::KillPathComponent => MoveWordStyle::PathComponents,
+                    rl::KillWord => MoveWordStyle::Punctuation,
+                    _ => unreachable!(),
                 };
                 self.data.move_word(
                     self.active_edit_line_tag(),
@@ -3494,7 +3496,10 @@ impl<'a> Reader<'a> {
                     self.update_buff_pos(elt, Some(new_position));
                 }
             }
-            rl::BackwardWord | rl::BackwardBigword | rl::PrevdOrBackwardWord => {
+            rl::BackwardWord
+            | rl::BackwardPathComponent
+            | rl::BackwardBigword
+            | rl::PrevdOrBackwardWord => {
                 if c == rl::PrevdOrBackwardWord && self.command_line.is_empty() {
                     self.eval_bind_cmd(L!("prevd"));
                     self.force_exec_prompt_and_repaint = true;
@@ -3503,10 +3508,11 @@ impl<'a> Reader<'a> {
                     return;
                 }
 
-                let style = if c != rl::BackwardBigword {
-                    MoveWordStyle::Punctuation
-                } else {
-                    MoveWordStyle::Whitespace
+                let style = match c {
+                    rl::BackwardBigword => MoveWordStyle::Whitespace,
+                    rl::BackwardPathComponent => MoveWordStyle::PathComponents,
+                    rl::BackwardWord | rl::PrevdOrBackwardWord => MoveWordStyle::Punctuation,
+                    _ => unreachable!(),
                 };
                 self.data.move_word(
                     self.active_edit_line_tag(),
@@ -3516,7 +3522,10 @@ impl<'a> Reader<'a> {
                     false,
                 );
             }
-            rl::ForwardWord | rl::ForwardBigword | rl::NextdOrForwardWord => {
+            rl::ForwardWord
+            | rl::ForwardPathComponent
+            | rl::ForwardBigword
+            | rl::NextdOrForwardWord => {
                 if c == rl::NextdOrForwardWord && self.command_line.is_empty() {
                     self.eval_bind_cmd(L!("nextd"));
                     self.force_exec_prompt_and_repaint = true;
@@ -3525,11 +3534,13 @@ impl<'a> Reader<'a> {
                     return;
                 }
 
-                let style = if c != rl::ForwardBigword {
-                    MoveWordStyle::Punctuation
-                } else {
-                    MoveWordStyle::Whitespace
+                let style = match c {
+                    rl::ForwardBigword => MoveWordStyle::Whitespace,
+                    rl::ForwardPathComponent => MoveWordStyle::PathComponents,
+                    rl::ForwardWord | rl::NextdOrForwardWord => MoveWordStyle::Punctuation,
+                    _ => unreachable!(),
                 };
+
                 if self.is_at_autosuggestion() {
                     self.accept_autosuggestion(AutosuggestionPortion::PerMoveWordStyle(style));
                 } else if !self.is_at_end() {
@@ -4122,7 +4133,7 @@ impl<'a> Reader<'a> {
 
         let cmdsubst_range = parse_util_cmdsubst_extent(&buffer, pos);
         for token in Tokenizer::new(&buffer[cmdsubst_range.clone()], TOK_ACCEPT_UNFINISHED) {
-            if token.type_ != TokenType::string {
+            if token.type_ != TokenType::String {
                 continue;
             }
             let tok_end = cmdsubst_range.start + token.end();
@@ -4138,7 +4149,7 @@ impl<'a> Reader<'a> {
 fn text_ends_in_comment(text: &wstr) -> bool {
     Tokenizer::new(text, TOK_ACCEPT_UNFINISHED | TOK_SHOW_COMMENTS)
         .last()
-        .is_some_and(|token| token.type_ == TokenType::comment)
+        .is_some_and(|token| token.type_ == TokenType::Comment)
 }
 
 impl<'a> Reader<'a> {
@@ -4460,7 +4471,7 @@ fn term_donate(quiet: bool /* = false */) {
     {
         if errno().0 != EINTR {
             if !quiet {
-                FLOG!(
+                flog!(
                     warning,
                     wgettext!("Could not set terminal mode for new job")
                 );
@@ -4504,7 +4515,7 @@ pub fn set_shell_modes(fd: RawFd, whence: &str) -> bool {
     };
     if !ok {
         perror("tcsetattr");
-        FLOG!(
+        flog!(
             warning,
             wgettext_fmt!("Failed to set terminal mode (%s)", whence)
         );
@@ -4599,7 +4610,7 @@ fn acquire_tty_or_exit(shell_pgid: libc::pid_t) {
                 break;
             }
             // No TTY, cannot be interactive?
-            FLOG!(
+            flog!(
                 warning,
                 wgettext!("No TTY for interactive shell (tcgetpgrp failed)")
             );
@@ -4612,7 +4623,7 @@ fn acquire_tty_or_exit(shell_pgid: libc::pid_t) {
             if check_for_orphaned_process(loop_count, shell_pgid) {
                 // We're orphaned, so we just die. Another sad statistic.
                 let pid = getpid();
-                FLOG!(
+                flog!(
                     warning,
                     sprintf!(
                         "I appear to be an orphaned process, so I am quitting politely. My pid is %d.",
@@ -4655,7 +4666,7 @@ fn reader_interactive_init() {
             //
             // This should be harmless, so we ignore it.
             if errno().0 != EPERM {
-                FLOG!(
+                flog!(
                     error,
                     wgettext!("Failed to assign shell to its own process group")
                 );
@@ -4666,7 +4677,7 @@ fn reader_interactive_init() {
 
         // Take control of the terminal
         if unsafe { libc::tcsetpgrp(STDIN_FILENO, shell_pgid) } == -1 {
-            FLOG!(error, wgettext!("Failed to take control of the terminal"));
+            flog!(error, wgettext!("Failed to take control of the terminal"));
             perror("tcsetpgrp");
             exit_without_destructors(1);
         }
@@ -5162,7 +5173,7 @@ impl<'a> Reader<'a> {
         let mut loaded_new = false;
         for to_load in &result.needs_load {
             if complete_load(to_load, self.parser) {
-                FLOGF!(
+                flogf!(
                     complete,
                     "Autosuggest found new completions for %s, restarting",
                     to_load
@@ -5216,7 +5227,7 @@ impl<'a> Reader<'a> {
         self.data.in_flight_autosuggest_request = el.text().to_owned();
 
         // Clear the autosuggestion and kick it off in the background.
-        FLOG!(reader_render, "Autosuggesting");
+        flog!(reader_render, "Autosuggesting");
         self.data.autosuggestion.clear();
         let performer = get_autosuggestion_performer(
             self.parser,
@@ -5317,8 +5328,7 @@ impl<'a> Reader<'a> {
                 let have = search_string_range.len();
                 let mut want = have;
                 while want < autosuggestion_text.len() {
-                    let wc = autosuggestion_text.as_char_slice()[want];
-                    if !state.consume_char(wc) {
+                    if !state.consume_char(autosuggestion_text, want) {
                         break;
                     }
                     want += 1;
@@ -5387,7 +5397,7 @@ impl<'a> Reader<'a> {
         }
         self.in_flight_highlight_request = self.command_line.text().to_owned();
 
-        FLOG!(reader_render, "Highlighting");
+        flog!(reader_render, "Highlighting");
         let highlight_performer =
             get_highlight_performer(self.parser, &self.command_line, /*io_ok=*/ true);
         self.debouncers.highlight.perform(highlight_performer);
@@ -5618,7 +5628,7 @@ fn expand_replacer(
 ) -> Option<abbrs::Replacement> {
     if !repl.is_function {
         // Literal replacement cannot fail.
-        FLOGF!(
+        flogf!(
             abbrs,
             "Expanded literal abbreviation <%s> -> <%s>",
             token,
@@ -5651,7 +5661,7 @@ fn expand_replacer(
         return None;
     }
     let result = join_strings(&outputs, '\n');
-    FLOGF!(
+    flogf!(
         abbrs,
         "Expanded function abbreviation <%s> -> <%s>",
         token,

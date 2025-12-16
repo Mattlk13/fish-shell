@@ -16,7 +16,7 @@ use crate::env::{EnvMode, EnvStack, Environment, READ_BYTE_LIMIT, Statuses};
 use crate::env_dispatch::use_posix_spawn;
 use crate::fds::make_fd_blocking;
 use crate::fds::{PIPE_ERROR, make_autoclose_pipes, open_cloexec};
-use crate::flog::{FLOG, FLOGF};
+use crate::flog::{flog, flogf};
 use crate::fork_exec::PATH_BSHELL;
 use crate::fork_exec::blocked_signals_for_job;
 use crate::fork_exec::postfork::{
@@ -148,7 +148,7 @@ pub fn exec_job(parser: &Parser, job: &Job, block_io: IoChain) -> bool {
         std::mem::swap(&mut proc_pipes.read, &mut pipe_next_read);
         if !p.is_last_in_job {
             let Ok(pipes) = make_autoclose_pipes() else {
-                FLOG!(warning, wgettext!(PIPE_ERROR));
+                flog!(warning, wgettext!(PIPE_ERROR));
                 aborted_pipeline = true;
                 abort_pipeline_from(job, i);
                 break;
@@ -221,7 +221,7 @@ pub fn exec_job(parser: &Parser, job: &Job, block_io: IoChain) -> bool {
         }
     }
 
-    FLOGF!(
+    flogf!(
         exec_job_exec,
         "Executed job %d from command '%s'",
         job.job_id(),
@@ -579,7 +579,7 @@ fn run_internal_process(p: &Process, outdata: Vec<u8>, errdata: Vec<u8>, ios: &I
         success_status: ProcStatus::default(),
     });
 
-    FLOGF!(
+    flogf!(
         proc_internal_proc,
         "Created internal proc %u to write output for proc '%s'",
         internal_proc.get_id(),
@@ -651,7 +651,7 @@ fn run_internal_process_or_short_circuit(
     if outdata.is_empty() && errdata.is_empty() {
         p.completed.store(true);
         if p.is_last_in_job {
-            FLOGF!(
+            flogf!(
                 exec_job_status,
                 "Set status of job %d (%s) to %d using short circuit",
                 j.job_id(),
@@ -765,7 +765,7 @@ fn fork_child_for_process(
     }
 
     let count = FORK_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
-    FLOGF!(
+    flogf!(
         exec_fork,
         "Fork #%d, pid %d fork external command for '%s'",
         count,
@@ -790,21 +790,21 @@ fn create_output_stream_for_builtin(
         return OutputStream::Fd(FdOutputStream::new(fd));
     };
     match io.io_mode() {
-        IoMode::bufferfill => {
+        IoMode::BufferFill => {
             // Our IO redirection is to an internal buffer, e.g. a command substitution.
             // We will write directly to it.
             let buffer = io.as_bufferfill().unwrap().buffer();
             OutputStream::Buffered(BufferedOutputStream::new(buffer.clone()))
         }
-        IoMode::close => {
+        IoMode::Close => {
             // Like 'echo foo >&-'
             OutputStream::Null
         }
-        IoMode::file => {
+        IoMode::File => {
             // Output is to a file which has been opened.
             OutputStream::Fd(FdOutputStream::new(io.source_fd()))
         }
-        IoMode::pipe => {
+        IoMode::Pipe => {
             // Output is to a pipe. We may need to buffer.
             if piped_output_needs_buffering {
                 OutputStream::String(StringOutputStream::new())
@@ -812,7 +812,7 @@ fn create_output_stream_for_builtin(
                 OutputStream::Fd(FdOutputStream::new(io.source_fd()))
             }
         }
-        IoMode::fd => {
+        IoMode::Fd => {
             // This is a case like 'echo foo >&5'
             // It's uncommon and unclear what should happen.
             OutputStream::String(StringOutputStream::new())
@@ -901,7 +901,7 @@ fn exec_external_command(
                 return Err(());
             }
         };
-        FLOGF!(
+        flogf!(
             exec_fork,
             "Fork #%d, pid %d: spawn external command '%s' from '%s'",
             count,
@@ -1033,7 +1033,7 @@ fn get_performer_for_function(
     let io_chain = io_chain.clone();
     // This may occur if the function was erased as part of its arguments or in other strange edge cases.
     let Some(props) = function::get_props(p.argv0().unwrap()) else {
-        FLOG!(
+        flog!(
             error,
             wgettext_fmt!("Unknown function '%s'", p.argv0().unwrap())
         );
@@ -1158,7 +1158,7 @@ fn get_performer_for_builtin(p: &Process, j: &Job, io_chain: &IoChain) -> Box<Pr
                 // which is internal to fish. We still respect this redirection in
                 // that we pass it on as a block IO to the code that source runs,
                 // and therefore this is not an error.
-                let ignore_redirect = inp.io_mode() == IoMode::fd && inp.source_fd() >= 3;
+                let ignore_redirect = inp.io_mode() == IoMode::Fd && inp.source_fd() >= 3;
                 if !ignore_redirect {
                     local_builtin_stdin = inp.source_fd();
                 }
@@ -1171,8 +1171,8 @@ fn get_performer_for_builtin(p: &Process, j: &Job, io_chain: &IoChain) -> Box<Pr
             streams.stdin_is_directly_redirected = stdin_is_directly_redirected;
             streams.out_is_redirected = out_io.is_some();
             streams.err_is_redirected = err_io.is_some();
-            streams.out_is_piped = out_io.is_some_and(|io| io.io_mode() == IoMode::pipe);
-            streams.err_is_piped = err_io.is_some_and(|io| io.io_mode() == IoMode::pipe);
+            streams.out_is_piped = out_io.is_some_and(|io| io.io_mode() == IoMode::Pipe);
+            streams.err_is_piped = err_io.is_some_and(|io| io.io_mode() == IoMode::Pipe);
 
             // Disallow nul bytes in the arguments, as they are not allowed in builtins.
             let mut shim_argv: Vec<&wstr> =

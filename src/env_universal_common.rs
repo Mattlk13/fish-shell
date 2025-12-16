@@ -2,7 +2,7 @@ use crate::common::{
     UnescapeFlags, UnescapeStringStyle, unescape_string, valid_var_name, wcs2zstring,
 };
 use crate::env::{EnvVar, EnvVarFlags, VarTable};
-use crate::flog::{FLOG, FLOGF};
+use crate::flog::{flog, flogf};
 use crate::fs::{PotentialUpdate, lock_and_load, rewrite_via_temporary_file};
 use crate::path::path_get_config;
 use crate::wchar::{decode_byte_from_char, prelude::*};
@@ -30,9 +30,9 @@ pub type CallbackDataList = Vec<CallbackData>;
 // List of fish universal variable formats.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum UvarFormat {
-    fish_2_x,
-    fish_3_0,
-    future,
+    Fish_2_x,
+    Fish_3_0,
+    Future,
 }
 
 /// Class representing universal variables.
@@ -162,15 +162,15 @@ impl EnvUniversal {
             return (false, None);
         }
 
-        FLOG!(uvar_file, "universal log sync");
+        flog!(uvar_file, "universal log sync");
         // If we have no changes, just load.
         if self.modified.is_empty() {
             let callbacks = self.load_from_path_narrow();
-            FLOG!(uvar_file, "universal log no modifications");
+            flog!(uvar_file, "universal log no modifications");
             return (false, callbacks);
         }
 
-        FLOG!(uvar_file, "universal log performing full sync");
+        flog!(uvar_file, "universal log performing full sync");
 
         let rewrite = |old_file: &File,
                        tmp_file: &mut File|
@@ -221,7 +221,7 @@ impl EnvUniversal {
                 }
             }
             Err(e) => {
-                FLOG!(uvar_file, "universal log sync failed:", e);
+                flog!(uvar_file, "universal log sync failed:", e);
                 (false, None)
             }
         }
@@ -250,14 +250,14 @@ impl EnvUniversal {
             wide_line = WString::from_str(line);
 
             match format {
-                UvarFormat::fish_2_x => {
+                UvarFormat::Fish_2_x => {
                     Self::parse_message_2x_internal(&wide_line, out_vars, &mut storage);
                 }
-                UvarFormat::fish_3_0 => {
+                UvarFormat::Fish_3_0 => {
                     Self::parse_message_30_internal(&wide_line, out_vars, &mut storage);
                 }
                 // For future formats, just try with the most recent one.
-                UvarFormat::future => {
+                UvarFormat::Future => {
                     Self::parse_message_30_internal(&wide_line, out_vars, &mut storage);
                 }
             }
@@ -298,13 +298,13 @@ impl EnvUniversal {
             return if versionbuf.starts_with(UVARS_VERSION_3_0)
                 && versionbuf[UVARS_VERSION_3_0.len()] == b'\0'
             {
-                UvarFormat::fish_3_0
+                UvarFormat::Fish_3_0
             } else {
-                UvarFormat::future
+                UvarFormat::Future
             };
         }
         // No version found, assume 2.x
-        return UvarFormat::fish_2_x;
+        return UvarFormat::Fish_2_x;
     }
 
     /// Serialize a variable list.
@@ -359,11 +359,11 @@ impl EnvUniversal {
         if self.last_read_file_id != INVALID_FILE_ID
             && file_id_for_path_narrow(&self.narrow_vars_path) == self.last_read_file_id
         {
-            FLOG!(uvar_file, "universal log sync elided based on fast stat()");
+            flog!(uvar_file, "universal log sync elided based on fast stat()");
             return None;
         }
 
-        FLOG!(uvar_file, "universal log reading from file");
+        flog!(uvar_file, "universal log reading from file");
         match lock_and_load(&self.vars_path, |f, file_id| {
             Ok(self.load_from_file(f, file_id).map(|update| update.data))
         }) {
@@ -388,7 +388,7 @@ impl EnvUniversal {
                 None
             }
             Err(e) => {
-                FLOG!(uvar_file, "Failed to load from universal variable file:", e);
+                flog!(uvar_file, "Failed to load from universal variable file:", e);
                 None
             }
         }
@@ -408,7 +408,7 @@ impl EnvUniversal {
         current_file_id: FileId,
     ) -> Option<PotentialUpdate<UniversalReadUpdate>> {
         if current_file_id == self.last_read_file_id {
-            FLOG!(uvar_file, "universal log sync elided based on fstat()");
+            flog!(uvar_file, "universal log sync elided based on fstat()");
             None
         } else {
             // Read a variables table from the file.
@@ -417,7 +417,7 @@ impl EnvUniversal {
 
             // Hacky: if the read format is in the future, avoid overwriting the file: never try to
             // save.
-            let do_save = format != UvarFormat::future;
+            let do_save = format != UvarFormat::Future;
 
             // Announce changes and update our exports generation.
             let (export_generation_increment, callbacks) =
@@ -546,7 +546,7 @@ impl EnvUniversal {
 
         let mut cursor = msg;
         if !r#match(&mut cursor, f3::SETUVAR) {
-            FLOGF!(warning, PARSE_ERR, msg);
+            flogf!(warning, PARSE_ERR, msg);
             return;
         }
         // Parse out flags.
@@ -570,7 +570,7 @@ impl EnvUniversal {
 
         // Populate the variable with these flags.
         if !Self::populate_1_variable(cursor, flags, vars, storage) {
-            FLOGF!(warning, PARSE_ERR, msg);
+            flogf!(warning, PARSE_ERR, msg);
         }
     }
 
@@ -587,12 +587,12 @@ impl EnvUniversal {
             flags |= EnvVarFlags::EXPORT;
         } else if r#match(&mut cursor, f2x::SET) {
         } else {
-            FLOGF!(warning, PARSE_ERR, msg);
+            flogf!(warning, PARSE_ERR, msg);
             return;
         }
 
         if !Self::populate_1_variable(cursor, flags, vars, storage) {
-            FLOGF!(warning, PARSE_ERR, msg);
+            flogf!(warning, PARSE_ERR, msg);
         }
     }
 
@@ -604,7 +604,7 @@ impl EnvUniversal {
             .take(u64::try_from(MAX_READ_SIZE).expect("MAX_READ_SIZE must fit into u64"))
             .read_to_end(&mut contents)
         {
-            FLOG!(warning, "Failed to read file:", e);
+            flog!(warning, "Failed to read file:", e);
         }
 
         // Handle overlong files.
@@ -743,7 +743,7 @@ fn append_file_entry(
 
     // Append variable name like "fish_color_cwd".
     if !valid_var_name(key_in) {
-        FLOGF!(error, "Illegal variable name: '%s'", key_in);
+        flogf!(error, "Illegal variable name: '%s'", key_in);
         success = false;
     }
     if success {
@@ -1110,14 +1110,14 @@ mod tests {
                 );
             };
         }
-        validate!(b"# VERSION: 3.0", UvarFormat::fish_3_0);
-        validate!(b"# version: 3.0", UvarFormat::fish_2_x);
-        validate!(b"# blah blahVERSION: 3.0", UvarFormat::fish_2_x);
-        validate!(b"stuff\n# blah blahVERSION: 3.0", UvarFormat::fish_2_x);
-        validate!(b"# blah\n# VERSION: 3.0", UvarFormat::fish_3_0);
-        validate!(b"# blah\n#VERSION: 3.0", UvarFormat::fish_3_0);
-        validate!(b"# blah\n#VERSION:3.0", UvarFormat::fish_3_0);
-        validate!(b"# blah\n#VERSION:3.1", UvarFormat::future);
+        validate!(b"# VERSION: 3.0", UvarFormat::Fish_3_0);
+        validate!(b"# version: 3.0", UvarFormat::Fish_2_x);
+        validate!(b"# blah blahVERSION: 3.0", UvarFormat::Fish_2_x);
+        validate!(b"stuff\n# blah blahVERSION: 3.0", UvarFormat::Fish_2_x);
+        validate!(b"# blah\n# VERSION: 3.0", UvarFormat::Fish_3_0);
+        validate!(b"# blah\n#VERSION: 3.0", UvarFormat::Fish_3_0);
+        validate!(b"# blah\n#VERSION:3.0", UvarFormat::Fish_3_0);
+        validate!(b"# blah\n#VERSION:3.1", UvarFormat::Future);
     }
 
     #[test]

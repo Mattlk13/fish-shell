@@ -1,8 +1,8 @@
 // Generic output functions.
-use crate::FLOGF;
 use crate::color::{Color, Color24};
 use crate::common::ToCString;
 use crate::common::{self, EscapeStringStyle, escape_string, wcs2bytes, wcs2bytes_appending};
+use crate::flogf;
 use crate::future_feature_flags::{self, FeatureFlag};
 use crate::screen::{is_dumb, only_grayscale};
 use crate::text_face::{TextFace, TextStyling, UnderlineStyle};
@@ -225,7 +225,7 @@ fn maybe_terminfo(
 }
 
 pub(crate) fn use_terminfo() -> bool {
-    !future_feature_flags::test(FeatureFlag::ignore_terminfo) && TERM.lock().unwrap().is_some()
+    !future_feature_flags::test(FeatureFlag::IgnoreTerminfo) && TERM.lock().unwrap().is_some()
 }
 
 fn underline_mode(out: &mut impl Output, style: UnderlineStyle) -> bool {
@@ -394,7 +394,7 @@ fn osc_0_or_1_terminal_title(out: &mut impl Output, is_1: bool, title: &[WString
 }
 
 fn osc_133_prompt_start(out: &mut impl Output) -> bool {
-    if !future_feature_flags::test(FeatureFlag::mark_prompt) {
+    if !future_feature_flags::test(FeatureFlag::MarkPrompt) {
         return false;
     }
     static TEST_BALLOON: OnceCell<()> = OnceCell::new();
@@ -407,7 +407,7 @@ fn osc_133_prompt_start(out: &mut impl Output) -> bool {
 }
 
 fn osc_133_prompt_end(out: &mut impl Output) -> bool {
-    if !future_feature_flags::test(FeatureFlag::mark_prompt) {
+    if !future_feature_flags::test(FeatureFlag::MarkPrompt) {
         return false;
     }
     write_to_output!(out, "\x1b]133;B\x07");
@@ -415,7 +415,7 @@ fn osc_133_prompt_end(out: &mut impl Output) -> bool {
 }
 
 fn osc_133_command_start(out: &mut impl Output, command: &wstr) -> bool {
-    if !future_feature_flags::test(FeatureFlag::mark_prompt) {
+    if !future_feature_flags::test(FeatureFlag::MarkPrompt) {
         return false;
     }
     write_to_output!(
@@ -427,7 +427,7 @@ fn osc_133_command_start(out: &mut impl Output, command: &wstr) -> bool {
 }
 
 fn osc_133_command_finished(out: &mut impl Output, exit_status: libc::c_int) -> bool {
-    if !future_feature_flags::test(FeatureFlag::mark_prompt) {
+    if !future_feature_flags::test(FeatureFlag::MarkPrompt) {
         return false;
     }
     write_to_output!(out, "\x1b]133;D;{}\x07", exit_status);
@@ -887,7 +887,7 @@ pub fn setup() {
             let mut path = PathBuf::from(dir);
             path.push(first_char.clone());
             path.push(t.clone());
-            FLOGF!(term_support, "Trying path '%s'", path.to_str().unwrap());
+            flogf!(term_support, "Trying path '%s'", path.to_str().unwrap());
             if let Ok(db) = terminfo::Database::from_path(path) {
                 return Ok(db);
             }

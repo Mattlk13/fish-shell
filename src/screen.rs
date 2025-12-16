@@ -7,11 +7,9 @@
 //! The current implementation is less smart than ncurses allows and can not for example move blocks
 //! of text around to handle text insertion.
 
-use crate::FLOG;
 use crate::editable_line::line_at_cursor;
 use crate::key::ViewportPosition;
 use crate::pager::{PAGER_MIN_HEIGHT, PageRendering, Pager};
-use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::LinkedList;
 use std::io::Write;
@@ -29,7 +27,7 @@ use crate::common::{
 };
 use crate::env::Environment;
 use crate::fallback::fish_wcwidth;
-use crate::flog::FLOGF;
+use crate::flog::{flog, flogf};
 use crate::global_safety::RelaxedAtomicBool;
 use crate::highlight::{HighlightColorResolver, HighlightRole, HighlightSpec};
 use crate::terminal::TerminalCommand::{
@@ -302,7 +300,7 @@ impl Screen {
         let screen_width = curr_termsize.width();
         let screen_height = curr_termsize.height();
         static REPAINTS: AtomicU32 = AtomicU32::new(0);
-        FLOGF!(
+        flogf!(
             screen,
             "Repaint %u",
             1 + REPAINTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
@@ -567,7 +565,7 @@ impl Screen {
         let Some(lines_to_scroll) = self.viewport_y else {
             return;
         };
-        FLOG!(reader, "Pushing to scrollback");
+        flog!(reader, "Pushing to scrollback");
         if lines_to_scroll == 0 {
             return;
         }
@@ -580,7 +578,7 @@ impl Screen {
     }
 
     pub fn set_position_in_viewport(&mut self, whence: &str, viewport_y: Option<usize>) {
-        FLOGF!(
+        flogf!(
             reader,
             "Setting screen y to %s due to %s",
             viewport_y.map_or("<none>".to_string(), |y| format!("{y}")),
@@ -596,7 +594,7 @@ impl Screen {
         let actual_lines = self.actual.line_count();
         let remaining_vertical_space = screen_height.saturating_sub(actual_lines);
         if viewport_y > remaining_vertical_space {
-            FLOGF!(
+            flogf!(
                 reader,
                 "printing %u lines at y=%u would exceed window height (%u); \
                      assuming the extra lines have been pushed to scrollback, setting screen y to %d",
@@ -612,7 +610,7 @@ impl Screen {
     pub fn command_line_y_given_cursor_y(&mut self, viewport_cursor_y: usize) -> usize {
         let prompt_y = viewport_cursor_y.checked_sub(self.actual.cursor.y);
         prompt_y.unwrap_or_else(|| {
-            FLOG!(
+            flog!(
                 reader,
                 "Reported cursor line index",
                 viewport_cursor_y,
@@ -634,7 +632,7 @@ impl Screen {
             .y
             .checked_sub(viewport_y)
             .unwrap_or_else(|| {
-                FLOG!(
+                flog!(
                     reader,
                     "Given y",
                     viewport_position.y,
@@ -1954,21 +1952,6 @@ struct ScreenLayout {
     pub(crate) autosuggestion: WString,
 }
 
-// Given a vector whose indexes are offsets and whose values are the widths of the string if
-// truncated at that offset, return the offset that fits in the given width. Returns
-// width_by_offset.size() - 1 if they all fit. The first value in width_by_offset is assumed to be
-// 0.
-fn truncation_offset_for_width(str: &wstr, max_width: usize) -> usize {
-    let mut i = 0;
-    let mut width = 0;
-    while i < str.len() && width <= max_width {
-        width += wcwidth_rendered_min_0(str.char_at(i));
-        i += 1;
-    }
-    // i is the first index that did not fit; i - 1 is therefore the last that did.
-    i - 1
-}
-
 #[allow(clippy::too_many_arguments)]
 fn compute_layout(
     ellipsis_char: char,
@@ -2044,19 +2027,15 @@ fn compute_layout(
     // Now we should definitely fit.
     assert!(left_prompt_width + right_prompt_width <= screen_width);
 
-    // Truncate each logical line from the autosuggestion to fit on a single screen line.
-    // In future, we should truncate only once, at the end (#12004).
+    // Track each logical line from the autosuggestion so we can determine how much of it fits
+    // on screen. We allow the lines to soft wrap naturally and we only truncate vertically if
+    // we would exceed the screen height.
     let cursor_y = left_prompt_layout.line_starts.len() - 1
         + commandline_before_suggestion
             .chars()
             .filter(|&c| c == '\n')
             .count();
 
-    struct SuggestionLine<'a> {
-        available_autosuggest_space: usize,
-        autosuggestion_line: &'a wstr,
-        autosuggest_total_width: usize,
-    }
     let mut suggestion_lines = vec![];
 
     let mut available_vertical_space = screen_viewport_y.map_or(
@@ -2070,11 +2049,11 @@ fn compute_layout(
         .split(|&c| c == '\n')
         .enumerate()
     {
+        if available_vertical_space == 0 {
+            truncated_vertically = true;
+            break;
+        }
         let autosuggestion_line = wstr::from_char_slice(autosuggestion_line);
-        let autosuggest_total_width = autosuggestion_line
-            .chars()
-            .map(wcwidth_rendered_min_0)
-            .sum();
 
         // Calculate space available for autosuggestion.
         let indent_width = |pos| usize::try_from(indent[pos]).unwrap() * INDENT_STEP;
@@ -2088,80 +2067,82 @@ fn compute_layout(
             } else {
                 indent_width(suggestion_start - "\n".len())
             };
-        let available_horizontal_space = screen_width - (width % screen_width);
-
-        let suggestion_line_height =
-            if width >= screen_width || autosuggest_total_width >= available_horizontal_space {
-                // As per the comment above, we truncate and autosuggestion lines that would wrap.
-                // We truncate them at the very end of the screen, so they (barely) soft wrap,
-                // and take up two screen lines.
-                2
-            } else {
-                1
-            };
-        match available_vertical_space.checked_sub(suggestion_line_height) {
-            Some(lines) => available_vertical_space = lines,
-            None => {
-                truncated_vertically = true;
-                break;
+        available_vertical_space = available_vertical_space.saturating_sub(width / screen_width);
+        if available_vertical_space == 0 {
+            truncated_vertically = true;
+            break;
+        }
+        let column = width % screen_width;
+        fn consumed_lines_or_truncated_suggestion(
+            screen_width: usize,
+            available_vertical_space: usize,
+            mut column: usize,
+            autosuggestion_line: &wstr,
+        ) -> Result<usize, &wstr> {
+            let mut lines = 1;
+            for (i, ch) in autosuggestion_line.char_indices() {
+                let ch_width = wcwidth_rendered_min_0(ch);
+                let new_column = column + ch_width;
+                if new_column >= screen_width {
+                    column = 0;
+                    lines += 1;
+                }
+                let barely_softwrapped = new_column == screen_width;
+                if !barely_softwrapped {
+                    column += ch_width;
+                }
+                if lines > available_vertical_space {
+                    return Err(autosuggestion_line.slice_to(i));
+                }
             }
-        };
-
-        suggestion_lines.push(SuggestionLine {
-            available_autosuggest_space: available_horizontal_space,
-            autosuggestion_line,
-            autosuggest_total_width,
-        });
+            Ok(lines)
+        }
+        suggestion_lines.push(
+            match consumed_lines_or_truncated_suggestion(
+                screen_width,
+                available_vertical_space,
+                column,
+                autosuggestion_line,
+            ) {
+                Ok(lines) => {
+                    available_vertical_space -= lines;
+                    autosuggestion_line
+                }
+                Err(truncated) => {
+                    truncated_vertically = true;
+                    truncated
+                }
+            },
+        );
+        if truncated_vertically {
+            break;
+        }
 
         suggestion_start += autosuggestion_line.len() + "\n".len();
     }
 
     let mut autosuggestion = WString::new();
-    let mut erased = 0;
-    let mut suggestion_start = commandline_before_suggestion.len();
-    for (
-        line,
-        &SuggestionLine {
-            available_autosuggest_space,
-            autosuggestion_line,
-            autosuggest_total_width,
-        },
-    ) in suggestion_lines.iter().enumerate()
-    {
-        let truncated_suggestion_line;
-        let mut vertical_truncation_marker = None;
-        if autosuggest_total_width > 0 && autosuggest_total_width >= available_autosuggest_space {
-            // horizontal truncation
-            let truncation_offset =
-                truncation_offset_for_width(autosuggestion_line, available_autosuggest_space - 1);
-            truncated_suggestion_line = Cow::Owned(
-                autosuggestion_line[..truncation_offset].to_owned()
-                    + wstr::from_char_slice(&[ellipsis_char]),
-            );
-        } else if truncated_vertically && line == suggestion_lines.len() - 1 {
-            // vertical truncation
-            truncated_suggestion_line = Cow::Borrowed(autosuggestion_line);
-            vertical_truncation_marker = Some(ellipsis_char);
-        } else {
-            // no truncation
-            assert!(available_autosuggest_space >= autosuggest_total_width);
-            truncated_suggestion_line = Cow::Borrowed(autosuggestion_line);
-        }
-
-        let truncation_range = suggestion_start - erased + truncated_suggestion_line.len()
-            ..suggestion_start - erased + autosuggestion_line.len();
-        colors.drain(truncation_range.clone());
-        indent.drain(truncation_range.clone());
-        erased += truncation_range.len();
-        suggestion_start += autosuggestion_line.len() + "\n".len();
-        if line != 0 {
+    let mut displayed_len = 0;
+    for (line_idx, autosuggestion_line) in suggestion_lines.iter().enumerate() {
+        if line_idx != 0 {
             autosuggestion.push('\n');
+            displayed_len += "\n".len();
         }
-        autosuggestion.push_utfstr(&truncated_suggestion_line);
-        if let Some(extra) = vertical_truncation_marker {
-            autosuggestion.push(extra);
-            colors.insert(truncation_range.end, colors[truncation_range.end - 1]);
-            indent.insert(truncation_range.end, indent[truncation_range.end - 1]);
+        autosuggestion.push_utfstr(autosuggestion_line);
+        displayed_len += autosuggestion_line.len();
+    }
+
+    let total_autosuggestion_len = autosuggestion_str.len();
+    let truncated_chars = total_autosuggestion_len.saturating_sub(displayed_len);
+    if truncated_chars > 0 {
+        let suggestion_end = commandline_before_suggestion.len() + displayed_len;
+        colors.drain(suggestion_end..suggestion_end + truncated_chars);
+        indent.drain(suggestion_end..suggestion_end + truncated_chars);
+        if truncated_vertically && displayed_len > 0 {
+            let suggestion_last = suggestion_end - 1;
+            autosuggestion.push(ellipsis_char);
+            colors.insert(suggestion_end, colors[suggestion_last]);
+            indent.insert(suggestion_end, indent[suggestion_last]);
         }
     }
     result.autosuggestion = autosuggestion;
@@ -2503,7 +2484,7 @@ mod tests {
                 "left>",
                 5,
                 "<right",
-                " autosugges…",
+                " autosuggesTION",
             )
         );
         validate!(
@@ -2523,7 +2504,7 @@ mod tests {
                 "left>",
                 5,
                 "<right",
-                " autosuggestion t…",
+                " autosuggestion tRUNCATED",
             )
         );
         validate!(
@@ -2533,7 +2514,7 @@ mod tests {
                 "left>",
                 5,
                 "<right",
-                " autosuggesti…",
+                " autosuggestiON  TRUNCATED",
             )
         );
         let indent = validate!(
@@ -2543,10 +2524,10 @@ mod tests {
                 "left>",
                 5,
                 "<right",
-                " autosuggesti…",
+                " autosuggestiON  TRUNCATED",
             )
         );
-        assert_eq!(indent["if :\ncommand autosuggesti…\n".len()], 1);
+        assert_eq!(indent["if :\ncommand autosuggestiON  TRUNCATED\n".len()], 1);
 
         validate!(
             (
@@ -2555,7 +2536,7 @@ mod tests {
                 "left>",
                 5,
                 "",
-                " auto…",
+                " autoSUGGESTION",
             )
         );
         validate!(
@@ -2565,7 +2546,7 @@ mod tests {
                 "left>",
                 5,
                 "",
-                "…",
+                "s",
             )
         );
         validate!(
@@ -2575,7 +2556,7 @@ mod tests {
                 "left>",
                 5,
                 "",
-                "…",
+                "SUGGESTION",
             )
         );
         validate!(
@@ -2585,7 +2566,7 @@ mod tests {
                 "left>",
                 5,
                 "",
-                "uggestion long so…",
+                "uggestion long soFT WRAP",
             )
         );
         validate!(
@@ -2595,7 +2576,7 @@ mod tests {
                 "left>",
                 5,
                 "<right",
-                "and …",
+                "and AUTOSUGGESTION",
             )
         );
         validate!(
@@ -2605,7 +2586,7 @@ mod tests {
                 "left>",
                 5,
                 "<right",
-                "…",
+                "AUTOSUGGESTION",
             )
         );
         validate!( //
@@ -2615,7 +2596,7 @@ mod tests {
                 "left>",
                 5,
                 "<right",
-                "utosuggestion sof…",
+                "utosuggestion sofT WRAP",
             )
         );
         validate!(
@@ -2625,7 +2606,7 @@ mod tests {
                 "left>",
                 5,
                 "",
-                "and …",
+                "and AUTOSUGGESTION",
             )
         );
         validate!(
@@ -2635,7 +2616,7 @@ mod tests {
                 "left>",
                 5,
                 "",
-                "…",
+                "AUTOSUGGESTION",
             )
         );
         validate!(
@@ -2645,7 +2626,7 @@ mod tests {
                 "left>",
                 5,
                 "",
-                "utosuggestion sof…",
+                "utosuggestion sofT WRAP",
             )
         );
     }

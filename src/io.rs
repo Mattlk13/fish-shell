@@ -4,7 +4,7 @@ use crate::fd_monitor::{Callback, FdMonitor, FdMonitorItemId};
 use crate::fds::{
     AutoCloseFd, PIPE_ERROR, make_autoclose_pipes, make_fd_nonblocking, wopen_cloexec,
 };
-use crate::flog::{FLOG, FLOGF, should_flog};
+use crate::flog::{flog, flogf, should_flog};
 use crate::nix::isatty;
 use crate::path::path_apply_working_directory;
 use crate::proc::JobGroupRef;
@@ -162,11 +162,11 @@ impl SeparatedBuffer {
 /// Describes what type of IO operation an io_data_t represents.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum IoMode {
-    file,
-    pipe,
-    fd,
-    close,
-    bufferfill,
+    File,
+    Pipe,
+    Fd,
+    Close,
+    BufferFill,
 }
 
 /// Represents a FD redirection.
@@ -196,7 +196,7 @@ impl IoClose {
 }
 impl IoData for IoClose {
     fn io_mode(&self) -> IoMode {
-        IoMode::close
+        IoMode::Close
     }
     fn fd(&self) -> RawFd {
         self.fd
@@ -222,7 +222,7 @@ impl IoFd {
 }
 impl IoData for IoFd {
     fn io_mode(&self) -> IoMode {
-        IoMode::fd
+        IoMode::Fd
     }
     fn fd(&self) -> RawFd {
         self.fd
@@ -251,7 +251,7 @@ impl IoFile {
 }
 impl IoData for IoFile {
     fn io_mode(&self) -> IoMode {
-        IoMode::file
+        IoMode::File
     }
     fn fd(&self) -> RawFd {
         self.fd
@@ -283,7 +283,7 @@ impl IoPipe {
 }
 impl IoData for IoPipe {
     fn io_mode(&self) -> IoMode {
-        IoMode::pipe
+        IoMode::Pipe
     }
     fn fd(&self) -> RawFd {
         self.fd
@@ -335,7 +335,7 @@ impl IoBufferfill {
         match make_fd_nonblocking(pipes.read.as_raw_fd()) {
             Ok(_) => (),
             Err(e) => {
-                FLOG!(warning, PIPE_ERROR);
+                flog!(warning, PIPE_ERROR);
                 perror_io("fcntl", &e);
                 return Err(e);
             }
@@ -367,7 +367,7 @@ impl IoBufferfill {
 }
 impl IoData for IoBufferfill {
     fn io_mode(&self) -> IoMode {
-        IoMode::bufferfill
+        IoMode::BufferFill
     }
     fn fd(&self) -> RawFd {
         self.target
@@ -530,15 +530,15 @@ impl IoChain {
             // or there's a non-directory component,
             // find the first problematic component for a better message.
             if [ENOENT, ENOTDIR].contains(&err) {
-                FLOGF!(warning, FILE_ERROR, target);
+                flogf!(warning, FILE_ERROR, target);
                 let mut dname: &wstr = target;
                 while !dname.is_empty() {
                     let next: &wstr = wdirname(dname);
                     if let Ok(md) = wstat(next) {
                         if !md.is_dir() {
-                            FLOGF!(warning, "Path '%s' is not a directory", next);
+                            flogf!(warning, "Path '%s' is not a directory", next);
                         } else {
-                            FLOGF!(warning, "Path '%s' does not exist", dname);
+                            flogf!(warning, "Path '%s' does not exist", dname);
                         }
                         break;
                     }
@@ -548,14 +548,14 @@ impl IoChain {
                 // If we get EINTR we had a cancel signal.
                 // That's expected (ctrl-c on the commandline),
                 // so no warning.
-                FLOGF!(warning, FILE_ERROR, target);
+                flogf!(warning, FILE_ERROR, target);
                 perror("open");
             }
         };
 
         for spec in specs {
             match spec.mode {
-                RedirectionMode::fd => {
+                RedirectionMode::Fd => {
                     if spec.is_close() {
                         self.push(Arc::new(IoClose::new(spec.fd)));
                     } else {
@@ -577,8 +577,8 @@ impl IoChain {
                         }
                         Err(err) => {
                             if oflags.contains(OFlag::O_EXCL) && err == nix::Error::EEXIST {
-                                FLOGF!(warning, NOCLOB_ERROR, spec.target);
-                            } else if spec.mode != RedirectionMode::try_input
+                                flogf!(warning, NOCLOB_ERROR, spec.target);
+                            } else if spec.mode != RedirectionMode::TryInput
                                 && should_flog!(warning)
                             {
                                 print_error(errno::errno().0, &spec.target);
@@ -586,7 +586,7 @@ impl IoChain {
                             // If opening a file fails, insert a closed FD instead of the file redirection
                             // and return false. This lets execution potentially recover and at least gives
                             // the shell a chance to gracefully regain control of the shell (see #7038).
-                            if spec.mode != RedirectionMode::try_input {
+                            if spec.mode != RedirectionMode::TryInput {
                                 self.push(Arc::new(IoClose::new(spec.fd)));
                                 have_error = true;
                                 continue;
@@ -762,7 +762,7 @@ impl FdOutputStream {
         assert!(fd >= 0, "Invalid fd");
         FdOutputStream {
             fd,
-            sigcheck: SigChecker::new(Topic::sighupint),
+            sigcheck: SigChecker::new(Topic::SigHupInt),
             errored: false,
         }
     }

@@ -16,7 +16,7 @@ use super::yaml_backend::{
 };
 use crate::{
     common::wcs2bytes,
-    flog::FLOG,
+    flog::flog,
     path::{DirRemoteness, path_get_data_remoteness},
     wutil::FileId,
 };
@@ -273,7 +273,7 @@ impl TryFrom<MmapRegion> for RawHistoryFile {
         let type_ = infer_file_type(&region);
         if type_ == HistoryFileType::Fish1_x {
             let error_message = "unsupported history file format 1.x";
-            FLOG!(error, error_message);
+            flog!(error, error_message);
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 error_message,
@@ -311,7 +311,7 @@ pub fn append_history_item_to_buffer(item: &HistoryItem, buffer: &mut Vec<u8>) {
 /// Don't try mmap() on non-local filesystems.
 fn should_mmap() -> bool {
     // mmap only if we are known not-remote.
-    path_get_data_remoteness() != DirRemoteness::remote
+    path_get_data_remoteness() != DirRemoteness::Remote
 }
 
 pub fn time_to_seconds(ts: SystemTime) -> i64 {
