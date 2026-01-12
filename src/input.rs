@@ -44,11 +44,11 @@ pub struct InputMapping {
     /// We wish to preserve the user-specified order. This is just an incrementing value.
     specification_order: u32,
     /// Mode in which this command should be evaluated.
-    mode: WString,
+    pub mode: WString,
     /// New mode that should be switched to after command evaluation, or None to leave the mode unchanged.
-    sets_mode: Option<WString>,
+    pub sets_mode: Option<WString>,
     /// Perhaps this binding was created using a raw escape sequence.
-    key_name_style: KeyNameStyle,
+    pub key_name_style: KeyNameStyle,
 }
 
 impl InputMapping {
@@ -107,19 +107,23 @@ const INPUT_FUNCTION_METADATA: &[InputFunctionMetadata] = &[
     make_md(L!("accept-autosuggestion"), ReadlineCmd::AcceptAutosuggestion),
     make_md(L!("and"), ReadlineCmd::FuncAnd),
     make_md(L!("backward-bigword"), ReadlineCmd::BackwardBigword),
+    make_md(L!("backward-bigword-end"), ReadlineCmd::BackwardBigwordEnd),
     make_md(L!("backward-char"), ReadlineCmd::BackwardChar),
     make_md(L!("backward-char-passive"), ReadlineCmd::BackwardCharPassive),
     make_md(L!("backward-delete-char"), ReadlineCmd::BackwardDeleteChar),
     make_md(L!("backward-jump"), ReadlineCmd::BackwardJump),
     make_md(L!("backward-jump-till"), ReadlineCmd::BackwardJumpTill),
     make_md(L!("backward-kill-bigword"), ReadlineCmd::BackwardKillBigword),
+    make_md(L!("backward-kill-bigword-end"), ReadlineCmd::BackwardKillBigwordEnd),
     make_md(L!("backward-kill-line"), ReadlineCmd::BackwardKillLine),
     make_md(L!("backward-kill-path-component"), ReadlineCmd::BackwardKillPathComponent),
     make_md(L!("backward-kill-token"), ReadlineCmd::BackwardKillToken),
     make_md(L!("backward-kill-word"), ReadlineCmd::BackwardKillWord),
+    make_md(L!("backward-kill-word-end"), ReadlineCmd::BackwardKillWordEnd),
     make_md(L!("backward-path-component"), ReadlineCmd::BackwardPathComponent),
     make_md(L!("backward-token"), ReadlineCmd::BackwardToken),
     make_md(L!("backward-word"), ReadlineCmd::BackwardWord),
+    make_md(L!("backward-word-end"), ReadlineCmd::BackwardWordEnd),
     make_md(L!("begin-selection"), ReadlineCmd::BeginSelection),
     make_md(L!("begin-undo-group"), ReadlineCmd::BeginUndoGroup),
     make_md(L!("beginning-of-buffer"), ReadlineCmd::BeginningOfBuffer),
@@ -146,7 +150,9 @@ const INPUT_FUNCTION_METADATA: &[InputFunctionMetadata] = &[
     make_md(L!("exit"), ReadlineCmd::Exit),
     make_md(L!("expand-abbr"), ReadlineCmd::ExpandAbbr),
     make_md(L!("force-repaint"), ReadlineCmd::ForceRepaint),
-    make_md(L!("forward-bigword"), ReadlineCmd::ForwardBigword),
+    make_md(L!("forward-bigword"), ReadlineCmd::ForwardBigwordEmacs),
+    make_md(L!("forward-bigword-end"), ReadlineCmd::ForwardBigwordEnd),
+    make_md(L!("forward-bigword-vi"), ReadlineCmd::ForwardBigwordVi),
     make_md(L!("forward-char"), ReadlineCmd::ForwardChar),
     make_md(L!("forward-char-passive"), ReadlineCmd::ForwardCharPassive),
     make_md(L!("forward-jump"), ReadlineCmd::ForwardJump),
@@ -154,7 +160,9 @@ const INPUT_FUNCTION_METADATA: &[InputFunctionMetadata] = &[
     make_md(L!("forward-path-component"), ReadlineCmd::ForwardPathComponent),
     make_md(L!("forward-single-char"), ReadlineCmd::ForwardSingleChar),
     make_md(L!("forward-token"), ReadlineCmd::ForwardToken),
-    make_md(L!("forward-word"), ReadlineCmd::ForwardWord),
+    make_md(L!("forward-word"), ReadlineCmd::ForwardWordEmacs),
+    make_md(L!("forward-word-end"), ReadlineCmd::ForwardWordEnd),
+    make_md(L!("forward-word-vi"), ReadlineCmd::ForwardWordVi),
     make_md(L!("history-delete"), ReadlineCmd::HistoryDelete),
     make_md(L!("history-last-token-search-backward"), ReadlineCmd::HistoryLastTokenSearchBackward),
     make_md(L!("history-last-token-search-forward"), ReadlineCmd::HistoryLastTokenSearchForward),
@@ -171,15 +179,23 @@ const INPUT_FUNCTION_METADATA: &[InputFunctionMetadata] = &[
     make_md(L!("insert-line-under"), ReadlineCmd::InsertLineUnder),
     make_md(L!("jump-till-matching-bracket"), ReadlineCmd::JumpTillMatchingBracket),
     make_md(L!("jump-to-matching-bracket"), ReadlineCmd::JumpToMatchingBracket),
-    make_md(L!("kill-bigword"), ReadlineCmd::KillBigword),
+    make_md(L!("kill-a-bigword"), ReadlineCmd::KillABigWord),
+    make_md(L!("kill-a-word"), ReadlineCmd::KillAWord),
+    make_md(L!("kill-bigword"), ReadlineCmd::KillBigwordEmacs),
+    make_md(L!("kill-bigword-end"), ReadlineCmd::KillBigwordEnd),
+    make_md(L!("kill-bigword-vi"), ReadlineCmd::KillBigwordVi),
+    make_md(L!("kill-inner-bigword"), ReadlineCmd::KillInnerBigWord),
     make_md(L!("kill-inner-line"), ReadlineCmd::KillInnerLine),
+    make_md(L!("kill-inner-word"), ReadlineCmd::KillInnerWord),
     make_md(L!("kill-line"), ReadlineCmd::KillLine),
     make_md(L!("kill-path-component"), ReadlineCmd::KillPathComponent),
     make_md(L!("kill-selection"), ReadlineCmd::KillSelection),
     make_md(L!("kill-token"), ReadlineCmd::KillToken),
     make_md(L!("kill-whole-line"), ReadlineCmd::KillWholeLine),
-    make_md(L!("kill-word"), ReadlineCmd::KillWord),
-    make_md(L!("nextd-or-forward-word"), ReadlineCmd::NextdOrForwardWord),
+    make_md(L!("kill-word"), ReadlineCmd::KillWordEmacs),
+    make_md(L!("kill-word-end"), ReadlineCmd::KillWordEnd),
+    make_md(L!("kill-word-vi"), ReadlineCmd::KillWordVi),
+    make_md(L!("nextd-or-forward-word"), ReadlineCmd::NextdOrForwardWordEmacs),
     make_md(L!("or"), ReadlineCmd::FuncOr),
     make_md(L!("pager-toggle-search"), ReadlineCmd::PagerToggleSearch),
     make_md(L!("prevd-or-backward-word"), ReadlineCmd::PrevdOrBackwardWord),
@@ -922,31 +938,31 @@ impl InputMappingSet {
         result
     }
 
-    /// Gets the command bound to the specified key sequence in the specified mode. Returns true if
-    /// it exists, false if not.
+    /// Returns the command bound to the specified bind mode.
+    ///
+    /// If bind_mode is None, then binds from all modes are returned.
     pub fn get<'a>(
         &'a self,
         sequence: &[Key],
-        mode: &wstr,
-        out_cmds: &mut &'a [WString],
+        bind_mode: Option<&wstr>,
         user: bool,
-        out_sets_mode: &mut Option<&'a wstr>,
-        out_key_name_style: &mut KeyNameStyle,
-    ) -> bool {
+    ) -> Vec<&'a InputMapping> {
         let ml = if user {
             &self.mapping_list
         } else {
             &self.preset_mapping_list
         };
-        for m in ml {
-            if m.seq == sequence && m.mode == mode {
-                *out_cmds = &m.commands;
-                *out_sets_mode = m.sets_mode.as_deref();
-                *out_key_name_style = m.key_name_style.clone();
-                return true;
-            }
+
+        let ml = ml.iter().filter(|mapping| mapping.seq == sequence);
+        let mut mappings: Vec<_>;
+        if let Some(mode) = bind_mode {
+            mappings = ml.filter(|mapping| mapping.mode == mode).collect();
+            assert!(mappings.len() <= 1);
+        } else {
+            mappings = ml.collect();
+            mappings.sort_unstable_by_key(|mapping| mapping.specification_order);
         }
-        false
+        mappings
     }
 }
 
